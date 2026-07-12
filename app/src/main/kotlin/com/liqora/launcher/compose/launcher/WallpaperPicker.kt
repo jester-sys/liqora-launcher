@@ -1,0 +1,1009 @@
+package com.liqora.launcher.compose.launcher
+
+import android.content.Context
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.*
+import androidx.compose.material3.*
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
+import androidx.compose.runtime.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.platform.LocalView
+import android.view.HapticFeedbackConstants
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+private enum class InteractionType {
+    None, Scale, OffsetX, OffsetY
+}
+
+/**
+ * Wallpaper picker dialog with support for Background and Foreground (Subject) layers
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TimePickerDialog(
+    initialHour: Int,
+    initialMinute: Int,
+    onTimeSelected: (Int, Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val state = rememberTimePickerState(initialHour = initialHour, initialMinute = initialMinute)
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = RoundedCornerShape(16.dp), color = Color(0xFF1A1A24)) {
+            Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Select Time", color = Color.White, style = MaterialTheme.typography.headlineSmall)
+                Spacer(Modifier.height(24.dp))
+                TimePicker(state = state)
+                Spacer(Modifier.height(24.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss) { Text("Cancel") }
+                    TextButton(onClick = { onTimeSelected(state.hour, state.minute) }) { Text("OK") }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Wallpaper picker dialog with support for Background and Foreground (Subject) layers
+ */
+@Composable
+fun WallpaperPickerDialog(
+    settings: LiquidGlassSettings,
+    onSettingsChanged: (LiquidGlassSettings) -> Unit,
+    currentWallpaperUri: String?,
+    currentWallpaperNightUri: String? = null,
+    useSystemWallpaper: Boolean,
+    onWallpaperSelected: (String?) -> Unit,
+    onWallpaperNightSelected: (String?) -> Unit,
+    onWallpaperPermissionGranted: () -> Unit,
+    currentSubjectUri: String? = null,
+    currentSubjectNightUri: String? = null,
+    subjectMatchWallpaper: Boolean = true,
+    subjectScale: Float = 1f,
+    subjectOffsetX: Float = 0f,
+    subjectOffsetY: Float = 0f,
+    subjectNightMatchWallpaper: Boolean = true,
+    subjectNightScale: Float = 1f,
+    subjectNightOffsetX: Float = 0f,
+    subjectNightOffsetY: Float = 0f,
+    selectedSubjectMode: Int = 0,
+    onSubjectModeChanged: (Int) -> Unit = {},
+    onSubjectSelected: ((String?) -> Unit)? = null,
+    onSubjectNightSelected: ((String?) -> Unit)? = null,
+    onSubjectConfigChanged: ((Boolean, Boolean, Float, Float, Float) -> Unit)? = null,
+    backgroundScaleMode: String = "Fill",
+    onBackgroundScaleModeChanged: (String) -> Unit = {},
+    backgroundZoom: Float = 1.0f,
+    onBackgroundZoomChanged: (Float) -> Unit = {},
+    onInteractionStart: () -> Unit = {},
+    onInteractionEnd: () -> Unit = {},
+    onDismiss: () -> Unit
+) {
+    var showDayTimePicker by remember { mutableStateOf(false) }
+    var showNightTimePicker by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val view = LocalView.current
+
+    val wallpaperPermission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+        android.Manifest.permission.READ_MEDIA_IMAGES
+    } else {
+        android.Manifest.permission.READ_EXTERNAL_STORAGE
+    }
+
+    // Permission launcher for system wallpaper access
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted: Boolean ->
+        if (granted) {
+            onWallpaperPermissionGranted()
+            onWallpaperSelected(null)
+        } else {
+            android.widget.Toast.makeText(context, "Permission denied", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Photo Picker launcher for Background (Image & Video)
+    val backgroundPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        uri?.let {
+            val persistedUri = persistWallpaperUri(context, it)
+            onWallpaperSelected(persistedUri)
+        }
+    }
+
+    // Photo Picker launcher for Background (Night)
+    val backgroundNightPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        uri?.let {
+            val persistedUri = persistWallpaperUri(context, it)
+            onWallpaperNightSelected(persistedUri)
+        }
+    }
+
+    // Photo Picker launcher for Subject (Image only)
+    val subjectPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        uri?.let {
+            val persistedUri = persistWallpaperUri(context, it)
+            onSubjectSelected?.invoke(persistedUri)
+        }
+    }
+
+    // Photo Picker launcher for Subject (Night)
+    val subjectNightPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        uri?.let {
+            val persistedUri = persistWallpaperUri(context, it)
+            onSubjectNightSelected?.invoke(persistedUri)
+        }
+    }
+
+    var selectedTab by remember { mutableIntStateOf(0) } // 0 = Background, 1 = Subject
+    var activeInteraction by remember { mutableStateOf(InteractionType.None) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        val containerColor by androidx.compose.animation.animateColorAsState(
+            targetValue = if (activeInteraction != InteractionType.None) Color.Transparent else Color(0xFF1E1E2E)
+        )
+
+        val contentAlpha by androidx.compose.animation.core.animateFloatAsState(
+            targetValue = if (activeInteraction != InteractionType.None) 0f else 1f
+        )
+
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.9f)
+                .wrapContentHeight(),
+            shape = RoundedCornerShape(24.dp),
+            color = containerColor,
+            shadowElevation = if (activeInteraction != InteractionType.None) 0.dp else 6.dp
+        ) {
+            // Scrollable column to ensure Done button is always visible on small screens
+            Column(
+                modifier = Modifier
+                    .padding(24.dp)
+                    .verticalScroll(androidx.compose.foundation.rememberScrollState())
+            ) {
+                // Header Group - hide when interacting
+                if (activeInteraction == InteractionType.None) {
+                    Column(modifier = Modifier.graphicsLayer { alpha = contentAlpha }) {
+                        Text(
+                            "Background & Layers",
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = Color.White
+                        )
+
+                        Spacer(Modifier.height(16.dp))
+
+                        // Tabs
+                        TabRow(
+                            selectedTabIndex = selectedTab,
+                            containerColor = Color.Transparent,
+                            contentColor = Color(0xFF6366F1),
+                            indicator = { tabPositions ->
+                                TabRowDefaults.Indicator(
+                                    modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
+                                    color = Color(0xFF6366F1)
+                                )
+                            }
+                        ) {
+                            Tab(
+                                selected = selectedTab == 0,
+                                onClick = {
+                                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                                    selectedTab = 0
+                                },
+                                text = { Text("Background") }
+                            )
+                            Tab(
+                                selected = selectedTab == 1,
+                                onClick = {
+                                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                                    selectedTab = 1
+                                },
+                                text = { Text("Subject Layer") }
+                            )
+                        }
+
+                        Spacer(Modifier.height(24.dp))
+                    }
+                }
+
+                if (selectedTab == 0 && activeInteraction == InteractionType.None) {
+                    Column(modifier = Modifier.graphicsLayer { alpha = contentAlpha }) {
+                    // === BACKGROUND TAB ===
+
+                    // Reset wallpaper option
+                    WallpaperOption(
+                        icon = Icons.Rounded.RestartAlt,
+                        title = "Reset Wallpaper",
+                        description = "Use device default wallpaper",
+                        isSelected = useSystemWallpaper,
+                        onClick = {
+                            onWallpaperSelected(null)
+                            onWallpaperNightSelected(null)
+                        }
+                    )
+
+                    Spacer(Modifier.height(16.dp))
+
+                    Text("Custom Backgrounds", style = MaterialTheme.typography.labelLarge, color = Color.Gray)
+                    Spacer(Modifier.height(8.dp))
+
+                    // Pick Day wallpaper
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(modifier = Modifier.weight(1f)) {
+                            WallpaperOption(
+                                icon = Icons.Rounded.WbSunny,
+                                title = "Day Wallpaper",
+                                description = "Wallpaper for light theme",
+                                isSelected = !useSystemWallpaper && currentWallpaperUri != null,
+                                onClick = {
+                                    backgroundPickerLauncher.launch(
+                                        androidx.activity.result.PickVisualMediaRequest(
+                                            ActivityResultContracts.PickVisualMedia.ImageAndVideo
+                                        )
+                                    )
+                                }
+                            )
+                        }
+                        if (currentWallpaperUri != null) {
+                            IconButton(onClick = { onWallpaperSelected(null) }) {
+                                Icon(Icons.Rounded.Delete, "Clear", tint = Color.Red)
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+
+                    // Pick Night wallpaper
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(modifier = Modifier.weight(1f)) {
+                            WallpaperOption(
+                                icon = Icons.Rounded.NightsStay,
+                                title = "Night Wallpaper",
+                                description = "Wallpaper for dark theme",
+                                isSelected = !useSystemWallpaper && currentWallpaperNightUri != null,
+                                onClick = {
+                                    backgroundNightPickerLauncher.launch(
+                                        androidx.activity.result.PickVisualMediaRequest(
+                                            ActivityResultContracts.PickVisualMedia.ImageAndVideo
+                                        )
+                                    )
+                                }
+                            )
+                        }
+                        if (currentWallpaperNightUri != null) {
+                            IconButton(onClick = { onWallpaperNightSelected(null) }) {
+                                Icon(Icons.Rounded.Delete, "Clear", tint = Color.Red)
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+
+                    Text("Background Zoom: ${(backgroundZoom * 100).toInt()}%", style = MaterialTheme.typography.labelLarge, color = Color.Gray)
+                    Slider(
+                        value = backgroundZoom,
+                        onValueChange = { onBackgroundZoomChanged(it) },
+                        valueRange = 0.5f..2.0f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color(0xFF6366F1),
+                            activeTrackColor = Color(0xFF6366F1)
+                        )
+                    )
+
+                    Spacer(Modifier.height(24.dp))
+
+                    Text("Display Style", style = MaterialTheme.typography.labelLarge, color = Color.Gray)
+                    Spacer(Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF2E2E3E))
+                            .padding(4.dp)
+                    ) {
+                        listOf("Fill", "Fit").forEach { mode ->
+                            val isSelected = backgroundScaleMode == mode
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isSelected) Color(0xFF6366F1) else Color.Transparent)
+                                    .clickable {
+                                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                        onBackgroundScaleModeChanged(mode)
+                                    }
+                                    .padding(vertical = 10.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = mode,
+                                    color = if (isSelected) Color.White else Color.Gray,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(24.dp))
+
+                    // Preview section
+                    Text("Previews", style = MaterialTheme.typography.labelLarge, color = Color.Gray)
+                    Spacer(Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth().height(160.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        // Day Preview
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF2E2E3E)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (useSystemWallpaper) {
+                                Icon(Icons.Rounded.Smartphone, null, tint = Color.Gray)
+                            } else if (currentWallpaperUri != null) {
+                                AsyncImage(
+                                    model = ImageRequest.Builder(context).data(currentWallpaperUri).crossfade(true).build(),
+                                    contentDescription = "Day preview",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Icon(Icons.Rounded.WbSunny, null, tint = Color.Gray.copy(alpha = 0.5f))
+                            }
+                        }
+
+                        // Night Preview
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF2E2E3E)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (useSystemWallpaper) {
+                                Icon(Icons.Rounded.Smartphone, null, tint = Color.Gray)
+                            } else if (currentWallpaperNightUri != null) {
+                                AsyncImage(
+                                    model = ImageRequest.Builder(context).data(currentWallpaperNightUri).crossfade(true).build(),
+                                    contentDescription = "Night preview",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Icon(Icons.Rounded.NightsStay, null, tint = Color.Gray.copy(alpha = 0.5f))
+                            }
+                        }
+
+                        Spacer(Modifier.height(24.dp))
+                    }
+
+                    Text("Schedule", style = MaterialTheme.typography.labelLarge, color = Color.Gray)
+                    Spacer(Modifier.height(8.dp))
+
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        color = Color(0xFF2E2E3E),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Column(
+                                    modifier = Modifier.weight(1f).clickable { showDayTimePicker = true }.padding(8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Icon(Icons.Rounded.WbSunny, null, tint = Color(0xFFFBBF24))
+                                    Text("Day", color = Color.Gray, fontSize = 12.sp)
+                                    Text(String.format("%02d:%02d", settings.dayStartHour, settings.dayStartMinute), color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+                                Column(
+                                    modifier = Modifier.weight(1f).clickable { showNightTimePicker = true }.padding(8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Icon(Icons.Rounded.NightsStay, null, tint = Color(0xFF818CF8))
+                                    Text("Night", color = Color.Gray, fontSize = 12.sp)
+                                    Text(String.format("%02d:%02d", settings.nightStartHour, settings.nightStartMinute), color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+
+                    if (showDayTimePicker) {
+                        TimePickerDialog(
+                            initialHour = settings.dayStartHour,
+                            initialMinute = settings.dayStartMinute,
+                            onTimeSelected = { h, m ->
+                                onSettingsChanged(settings.copy(dayStartHour = h, dayStartMinute = m))
+                                showDayTimePicker = false
+                            },
+                            onDismiss = { showDayTimePicker = false }
+                        )
+                    }
+
+                    if (showNightTimePicker) {
+                        TimePickerDialog(
+                            initialHour = settings.nightStartHour,
+                            initialMinute = settings.nightStartMinute,
+                            onTimeSelected = { h, m ->
+                                onSettingsChanged(settings.copy(nightStartHour = h, nightStartMinute = m))
+                                showNightTimePicker = false
+                            },
+                            onDismiss = { showNightTimePicker = false }
+                        )
+                    }
+
+                    Spacer(Modifier.height(24.dp))
+
+                    }
+
+                } else {
+                    // === SUBJECT TAB ===
+
+                    if (activeInteraction == InteractionType.None) {
+                        Column(modifier = Modifier.graphicsLayer { alpha = contentAlpha }) {
+                            Text(
+                                "The subject layer sits between panels and app icons, creating a depth effect.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray
+                            )
+
+                            Spacer(Modifier.height(12.dp))
+
+                            // Day Subject
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(modifier = Modifier.weight(1f)) {
+                                    WallpaperOption(
+                                        icon = Icons.Rounded.WbSunny,
+                                        title = "Day Subject Image",
+                                        description = "Pick a transparent PNG for light theme",
+                                        isSelected = currentSubjectUri != null,
+                                        onClick = {
+                                            subjectPickerLauncher.launch(
+                                                androidx.activity.result.PickVisualMediaRequest(
+                                                    ActivityResultContracts.PickVisualMedia.ImageOnly
+                                                )
+                                            )
+                                        }
+                                    )
+                                }
+                                if (currentSubjectUri != null) {
+                                    IconButton(onClick = { onSubjectSelected?.invoke(null) }) {
+                                        Icon(Icons.Rounded.Delete, "Clear", tint = Color.Red)
+                                    }
+                                }
+                            }
+
+                            Spacer(Modifier.height(12.dp))
+
+                            // Night Subject
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(modifier = Modifier.weight(1f)) {
+                                    WallpaperOption(
+                                        icon = Icons.Rounded.NightsStay,
+                                        title = "Night Subject Image",
+                                        description = "Pick a transparent PNG for dark theme",
+                                        isSelected = currentSubjectNightUri != null,
+                                        onClick = {
+                                            subjectNightPickerLauncher.launch(
+                                                androidx.activity.result.PickVisualMediaRequest(
+                                                    ActivityResultContracts.PickVisualMedia.ImageOnly
+                                                )
+                                            )
+                                        }
+                                    )
+                                }
+                                if (currentSubjectNightUri != null) {
+                                    IconButton(onClick = { onSubjectNightSelected?.invoke(null) }) {
+                                        Icon(Icons.Rounded.Delete, "Clear", tint = Color.Red)
+                                    }
+                                }
+                            }
+
+                            if ((currentSubjectUri != null || currentSubjectNightUri != null) && activeInteraction == InteractionType.None) {
+                                Spacer(Modifier.height(24.dp))
+
+                                // Mode Selector for adjustments
+                                Text("Adjusting Mode", style = MaterialTheme.typography.labelLarge, color = Color.Gray)
+                                Spacer(Modifier.height(8.dp))
+                                TabRow(
+                                    selectedTabIndex = selectedSubjectMode,
+                                    containerColor = Color(0xFF2E2E3E),
+                                    contentColor = Color(0xFF6366F1),
+                                    modifier = Modifier.clip(RoundedCornerShape(12.dp)),
+                                    indicator = { tabPositions ->
+                                        TabRowDefaults.Indicator(
+                                            modifier = Modifier.tabIndicatorOffset(tabPositions[selectedSubjectMode]),
+                                            color = Color(0xFF6366F1)
+                                        )
+                                    }
+                                ) {
+                                    Tab(selected = selectedSubjectMode == 0, onClick = { onSubjectModeChanged(0) }, text = { Text("Day") })
+                                    Tab(selected = selectedSubjectMode == 1, onClick = { onSubjectModeChanged(1) }, text = { Text("Night") })
+                                }
+
+                                Spacer(Modifier.height(16.dp))
+
+                                val currentIsNight = selectedSubjectMode == 1
+                                val currentMatch = if (currentIsNight) subjectNightMatchWallpaper else subjectMatchWallpaper
+                                val currentScale = if (currentIsNight) subjectNightScale else subjectScale
+                                val currentOffX = if (currentIsNight) subjectNightOffsetX else subjectOffsetX
+                                val currentOffY = if (currentIsNight) subjectNightOffsetY else subjectOffsetY
+
+                                // Alignment Options
+                                Text("Alignment (${if(currentIsNight) "Night" else "Day"})", style = MaterialTheme.typography.labelLarge, color = Color.Gray)
+                                Spacer(Modifier.height(8.dp))
+
+                                // Match Switch
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(Color(0xFF2E2E3E))
+                                        .clickable {
+                                            onSubjectConfigChanged?.invoke(currentIsNight, !currentMatch, currentScale, currentOffX, currentOffY)
+                                        }
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("Match Wallpaper Alignment", color = Color.White, style = MaterialTheme.typography.bodyLarge)
+                                        Text(
+                                            "Best for cutouts from the original wallpaper",
+                                            color = Color.Gray,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                    Switch(
+                                        checked = currentMatch,
+                                        onCheckedChange = {
+                                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                            onSubjectConfigChanged?.invoke(currentIsNight, it, currentScale, currentOffX, currentOffY)
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if ((currentSubjectUri != null || currentSubjectNightUri != null)) {
+                        val currentIsNight = selectedSubjectMode == 1
+                        val currentMatch = if (currentIsNight) subjectNightMatchWallpaper else subjectMatchWallpaper
+                        val currentScale = if (currentIsNight) subjectNightScale else subjectScale
+                        val currentOffX = if (currentIsNight) subjectNightOffsetX else subjectOffsetX
+                        val currentOffY = if (currentIsNight) subjectNightOffsetY else subjectOffsetY
+
+                        if (!currentMatch) {
+                            if (activeInteraction == InteractionType.None) Spacer(Modifier.height(16.dp))
+
+                            // Scale Slider
+                            if (activeInteraction == InteractionType.None || activeInteraction == InteractionType.Scale) {
+                                Text(
+                                    "Scale: ${(currentScale * 100).toInt()}%",
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.graphicsLayer { alpha = if (activeInteraction == InteractionType.Scale || activeInteraction == InteractionType.None) 1f else 0f }
+                                )
+
+                                val scaleInteraction = remember { MutableInteractionSource() }
+                                LaunchedEffect(scaleInteraction) {
+                                    scaleInteraction.interactions.collect { interaction ->
+                                        when (interaction) {
+                                            is PressInteraction.Press, is DragInteraction.Start -> {
+                                                activeInteraction = InteractionType.Scale
+                                                onInteractionStart()
+                                            }
+                                            is PressInteraction.Release, is PressInteraction.Cancel, is DragInteraction.Stop, is DragInteraction.Cancel -> {
+                                                activeInteraction = InteractionType.None
+                                                onInteractionEnd()
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Slider(
+                                    value = currentScale,
+                                    onValueChange = {
+                                        // Tick logic for scale (e.g. every 0.1)
+                                        val oldQuantized = (currentScale / 0.1f).toInt()
+                                        val newQuantized = (it / 0.1f).toInt()
+                                        if (oldQuantized != newQuantized) {
+                                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                        }
+                                        onSubjectConfigChanged?.invoke(currentIsNight, false, it, currentOffX, currentOffY)
+                                    },
+                                    valueRange = 0.1f..3f,
+                                    interactionSource = scaleInteraction,
+                                    modifier = Modifier.graphicsLayer { alpha = if (activeInteraction == InteractionType.Scale || activeInteraction == InteractionType.None) 1f else 0f }
+                                )
+                            }
+
+                            // Offset X
+                            if (activeInteraction == InteractionType.None || activeInteraction == InteractionType.OffsetX) {
+                                Text(
+                                    "Offset X: ${currentOffX.toInt()}",
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.graphicsLayer { alpha = if (activeInteraction == InteractionType.OffsetX || activeInteraction == InteractionType.None) 1f else 0f }
+                                )
+
+                                val offsetXInteraction = remember { MutableInteractionSource() }
+                                LaunchedEffect(offsetXInteraction) {
+                                    offsetXInteraction.interactions.collect { interaction ->
+                                        when (interaction) {
+                                            is PressInteraction.Press, is DragInteraction.Start -> {
+                                                activeInteraction = InteractionType.OffsetX
+                                                onInteractionStart()
+                                            }
+                                            is PressInteraction.Release, is PressInteraction.Cancel, is DragInteraction.Stop, is DragInteraction.Cancel -> {
+                                                activeInteraction = InteractionType.None
+                                                onInteractionEnd()
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Slider(
+                                    value = currentOffX,
+                                    onValueChange = {
+                                        // Tick logic for offset (e.g. every 10 pixels)
+                                        val oldQuantized = (currentOffX / 10f).toInt()
+                                        val newQuantized = (it / 10f).toInt()
+                                        if (oldQuantized != newQuantized) {
+                                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                        }
+                                        onSubjectConfigChanged?.invoke(currentIsNight, false, currentScale, it, currentOffY)
+                                    },
+                                    valueRange = -500f..500f,
+                                    interactionSource = offsetXInteraction,
+                                    modifier = Modifier.graphicsLayer { alpha = if (activeInteraction == InteractionType.OffsetX || activeInteraction == InteractionType.None) 1f else 0f }
+                                )
+                            }
+
+                            // Offset Y
+                            if (activeInteraction == InteractionType.None || activeInteraction == InteractionType.OffsetY) {
+                                Text(
+                                    "Offset Y: ${currentOffY.toInt()}",
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.graphicsLayer { alpha = if (activeInteraction == InteractionType.OffsetY || activeInteraction == InteractionType.None) 1f else 0f }
+                                )
+
+                                val offsetYInteraction = remember { MutableInteractionSource() }
+                                LaunchedEffect(offsetYInteraction) {
+                                    offsetYInteraction.interactions.collect { interaction ->
+                                        when (interaction) {
+                                            is PressInteraction.Press, is DragInteraction.Start -> {
+                                                activeInteraction = InteractionType.OffsetY
+                                                onInteractionStart()
+                                            }
+                                            is PressInteraction.Release, is PressInteraction.Cancel, is DragInteraction.Stop, is DragInteraction.Cancel -> {
+                                                activeInteraction = InteractionType.None
+                                                onInteractionEnd()
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Slider(
+                                    value = currentOffY,
+                                    onValueChange = {
+                                        // Tick logic for offset (e.g. every 10 pixels)
+                                        val oldQuantized = (currentOffY / 10f).toInt()
+                                        val newQuantized = (it / 10f).toInt()
+                                        if (oldQuantized != newQuantized) {
+                                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                        }
+                                        onSubjectConfigChanged?.invoke(currentIsNight, false, currentScale, currentOffX, it)
+                                    },
+                                    valueRange = -500f..500f,
+                                    interactionSource = offsetYInteraction,
+                                    modifier = Modifier.graphicsLayer { alpha = if (activeInteraction == InteractionType.OffsetY || activeInteraction == InteractionType.None) 1f else 0f }
+                                )
+                            }
+                        }
+                    }
+
+                    if (activeInteraction == InteractionType.None) {
+                        Column(modifier = Modifier.graphicsLayer { alpha = contentAlpha }) {
+                            Spacer(Modifier.height(24.dp))
+
+                            Text("Current Subject", style = MaterialTheme.typography.labelLarge, color = Color.Gray)
+                            Spacer(Modifier.height(8.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth().height(160.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                // Day Subject Preview
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(Color(0xFF2E2E3E)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (currentSubjectUri != null) {
+                                        AsyncImage(
+                                            model = ImageRequest.Builder(context).data(currentSubjectUri).crossfade(true).build(),
+                                            contentDescription = "Day subject preview",
+                                            contentScale = ContentScale.Fit,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    } else {
+                                        Icon(Icons.Rounded.WbSunny, null, tint = Color.Gray.copy(alpha = 0.5f))
+                                    }
+                                }
+
+                                // Night Subject Preview
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(Color(0xFF2E2E3E)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (currentSubjectNightUri != null) {
+                                        AsyncImage(
+                                            model = ImageRequest.Builder(context).data(currentSubjectNightUri).crossfade(true).build(),
+                                            contentDescription = "Night subject preview",
+                                            contentScale = ContentScale.Fit,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    } else {
+                                        Icon(Icons.Rounded.NightsStay, null, tint = Color.Gray.copy(alpha = 0.5f))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                if (activeInteraction == InteractionType.None) {
+                    Spacer(Modifier.height(24.dp))
+
+                    // Buttons
+                    Row(
+                        modifier = Modifier.fillMaxWidth().graphicsLayer { alpha = contentAlpha },
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(onClick = {
+                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                            onDismiss()
+                        }) {
+                            Text("Done", color = Color(0xFF6366F1))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WallpaperOption(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    description: String,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    val borderColor = if (isSelected) Color(0xFF6366F1) else Color.Transparent
+    val view = LocalView.current
+    
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .border(2.dp, borderColor, RoundedCornerShape(16.dp))
+            .background(
+                if (isSelected) Color(0xFF6366F1).copy(alpha = 0.1f)
+                else Color(0xFF2E2E3E)
+            )
+            .clickable(onClick = {
+                view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                onClick()
+            })
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .background(
+                    if (isSelected) Color(0xFF6366F1) else Color(0xFF3E3E4E),
+                    RoundedCornerShape(12.dp)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+        
+        Spacer(Modifier.width(16.dp))
+        
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color.White
+            )
+            Text(
+                description,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray
+            )
+        }
+        
+        if (isSelected) {
+            Icon(
+                Icons.Rounded.Check,
+                contentDescription = "Selected",
+                tint = Color(0xFF6366F1)
+            )
+        }
+    }
+}
+
+/**
+ * Persist the wallpaper URI by copying to app storage
+ */
+fun persistWallpaperUri(context: Context, uri: Uri): String {
+    // We ALWAYS copy to internal storage to ensure cross-boot persistence
+    // Content URIs frequently lose permissions after reboot
+    return try {
+        val extension = context.contentResolver.getType(uri)?.split("/")?.lastOrNull() ?: "jpg"
+        val fileName = "wallpaper_${System.currentTimeMillis()}.$extension"
+        val file = java.io.File(context.filesDir, fileName)
+
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            file.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        file.absolutePath
+    } catch (e: Exception) {
+        android.util.Log.e("WallpaperPicker", "Failed to persist wallpaper", e)
+        uri.toString() // Fallback to raw URI if copy fails
+    }
+}
+
+/**
+ * Color picker for panel tints
+ */
+@Composable
+fun ColorPickerDialog(
+    currentColor: Color,
+    onColorSelected: (Color) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val view = LocalView.current
+    val presetColors = listOf(
+        Color(0xFF6366F1), // Indigo
+        Color(0xFF8B5CF6), // Violet
+        Color(0xFFEC4899), // Pink
+        Color(0xFFEF4444), // Red
+        Color(0xFFF97316), // Orange
+        Color(0xFFFBBF24), // Amber
+        Color(0xFF22C55E), // Green
+        Color(0xFF14B8A6), // Teal
+        Color(0xFF06B6D4), // Cyan
+        Color(0xFF3B82F6), // Blue
+        Color(0xFF64748B), // Slate
+        Color(0xFFFFFFFF), // White
+    )
+    
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = Color(0xFF1E1E2E)
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp)
+            ) {
+                Text(
+                    "Panel Color",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = Color.White
+                )
+                
+                Spacer(Modifier.height(24.dp))
+                
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(4),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(presetColors) { color ->
+                        val isSelected = color == currentColor
+                        Box(
+                            modifier = Modifier
+                                .size(56.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(color)
+                                .border(
+                                    width = if (isSelected) 3.dp else 0.dp,
+                                    color = if (isSelected) Color.White else Color.Transparent,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                .clickable {
+                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                    onColorSelected(color)
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isSelected) {
+                                Icon(
+                                    Icons.Rounded.Check,
+                                    contentDescription = "Selected",
+                                    tint = if (color == Color.White) Color.Black else Color.White
+                                )
+                            }
+                        }
+                    }
+                }
+                
+                Spacer(Modifier.height(24.dp))
+                
+                TextButton(
+                    onClick = {
+                        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                        onDismiss()
+                    },
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text("Done", color = Color(0xFF6366F1))
+                }
+            }
+        }
+    }
+}

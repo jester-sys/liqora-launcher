@@ -1,0 +1,94 @@
+package com.liqora.launcher.compose.launcher
+
+import android.content.Context
+import android.content.Intent
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import java.io.File
+
+/**
+ * Handles persistence of launcher configuration using JSON files
+ */
+object LauncherConfigRepository {
+    
+    private const val CONFIG_FILE_NAME = "launcher_config.json"
+    private const val ACTION_CONFIG_CHANGED = "com.liqora.launcher.ACTION_CONFIG_CHANGED"
+    
+    private val json = Json {
+        prettyPrint = true
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
+    
+    /**
+     * Save launcher configuration to file
+     */
+    suspend fun saveConfig(context: Context, config: LauncherConfig) {
+        withContext(Dispatchers.IO) {
+            try {
+                val file = File(context.filesDir, CONFIG_FILE_NAME)
+                val tempFile = File(context.filesDir, "$CONFIG_FILE_NAME.tmp")
+
+                val jsonString = json.encodeToString(config)
+                tempFile.writeText(jsonString)
+
+                if (tempFile.exists() && tempFile.length() > 0) {
+                    tempFile.renameTo(file)
+                }
+
+                // Notify service (WallpaperService) to reload config
+                context.sendBroadcast(Intent(ACTION_CONFIG_CHANGED))
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+    
+    /**
+     * Load launcher configuration from file
+     */
+    suspend fun loadConfig(context: Context): LauncherConfig? {
+        return withContext(Dispatchers.IO) {
+            val file = File(context.filesDir, CONFIG_FILE_NAME)
+            if (file.exists()) {
+                val jsonString = file.readText()
+                if (jsonString.isBlank()) return@withContext null
+
+                try {
+                    json.decodeFromString<LauncherConfig>(jsonString)
+                } catch (e: Exception) {
+                    // Re-throw to prevent returning null/default on corruption
+                    throw Exception("Failed to decode LauncherConfig: ${e.message}", e)
+                }
+            } else {
+                null
+            }
+        }
+    }
+    
+    /**
+     * Check if a saved configuration exists
+     */
+    fun hasConfig(context: Context): Boolean {
+        val file = File(context.filesDir, CONFIG_FILE_NAME)
+        return file.exists()
+    }
+    
+    /**
+     * Delete the saved configuration
+     */
+    suspend fun deleteConfig(context: Context) {
+        withContext(Dispatchers.IO) {
+            try {
+                val file = File(context.filesDir, CONFIG_FILE_NAME)
+                if (file.exists()) {
+                    file.delete()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+}

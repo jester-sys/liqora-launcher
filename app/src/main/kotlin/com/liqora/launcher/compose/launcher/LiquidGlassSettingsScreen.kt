@@ -1,0 +1,1740 @@
+package com.liqora.launcher.compose.launcher
+
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.*
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalContext
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.view.HapticFeedbackConstants
+import kotlinx.coroutines.launch
+import android.widget.Toast
+import android.provider.Settings
+import android.content.Intent
+import android.content.ComponentName
+import com.liqora.launcher.extensions.premiumGlow
+import com.liqora.launcher.helpers.LauncherUtils
+
+/**
+ * Premium design tokens for the settings surface.
+ * Centralized here so every setting row, card and dialog shares one visual language.
+ */
+/**
+ * Premium design tokens for the settings surface — sourced from the shared
+ * Blue Liquid Glass theme (LiquidGlassAppTheme.kt), so Settings automatically
+ * follows Dark/Light and matches every other screen's glass language.
+ */
+private object SettingsTokens {
+    private val c get() = GlassThemeState.colors
+    private val dark get() = GlassThemeState.isDark
+
+    val bgTop: Color get() = c.background
+    val bgBottom: Color get() = if (dark) Color(0xFF08080C) else c.surface
+    val dialogSurface: Color get() = if (dark) Color(0xFF16161D) else c.surface
+    val cardFill: Color get() = c.glassSurface
+    val cardBorder: Color get() = c.glassBorder
+    val cardPressed: Color get() = c.glassSurface.copy(alpha = (c.glassSurface.alpha + 0.06f).coerceAtMost(1f))
+    val accent: Color get() = c.primary
+    val accentSoft: Color get() = c.primary.copy(alpha = if (dark) 0.16f else 0.12f)
+    val divider: Color get() = if (dark) Color.White.copy(alpha = 0.06f) else Color.Black.copy(alpha = 0.07f)
+    val textPrimary: Color get() = c.textPrimary
+    val textSecondary: Color get() = c.textSecondary
+    val trackOff: Color get() = if (dark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.10f)
+
+    val cardShape = RoundedCornerShape(22.dp)
+    val chipShape = RoundedCornerShape(14.dp)
+}
+
+/**
+ * Fully organized and categorized settings for Liquid Glass Launcher
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun LiquidGlassSettingsScreen(
+    settings: LiquidGlassSettings,
+    onSettingsChanged: (LiquidGlassSettings) -> Unit,
+    launcherConfig: LauncherConfig,
+    onConfigChanged: (LauncherConfig) -> Unit,
+    onOpenWallpaperPicker: () -> Unit,
+    onExportSchematic: () -> Unit,
+    onImportSchematic: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val view = LocalView.current
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // Lifted dialog states
+    var showSecretPicker by remember { mutableStateOf(false) }
+    var showIconPackPicker by remember { mutableStateOf(false) }
+    var editingWeatherKey by remember { mutableStateOf(false) }
+    var editingIntegrityKey by remember { mutableStateOf(false) }
+    var showDevModeConfirmation by remember { mutableStateOf(false) }
+    var editingGitHubUrl by remember { mutableStateOf(false) }
+    var editingGitHubToken by remember { mutableStateOf(false) }
+    var showArtDebugger by remember { mutableStateOf(false) }
+    var showCustomArtManager by remember { mutableStateOf(false) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(SettingsTokens.bgTop, SettingsTokens.bgBottom)
+                    )
+                )
+                .drawBehind {
+                    // Soft ambient blue glow in the top corner — VisionOS-style
+                    // depth cue that reinforces "Blue Liquid Glass" even on a
+                    // solid (non-backdrop-blurred) full-screen surface.
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                GlassThemeState.colors.primary.copy(alpha = if (GlassThemeState.isDark) 0.16f else 0.10f),
+                                Color.Transparent
+                            ),
+                            center = androidx.compose.ui.geometry.Offset(size.width * 0.85f, -size.height * 0.05f),
+                            radius = size.width * 0.8f
+                        ),
+                        radius = size.width * 0.8f,
+                        center = androidx.compose.ui.geometry.Offset(size.width * 0.85f, -size.height * 0.05f)
+                    )
+                },
+            color = Color.Transparent
+        ) {
+            Scaffold(
+                topBar = {
+                    Column {
+                        TopAppBar(
+                            title = {
+                                Text(
+                                    "Settings",
+                                    style = LiquidGlassTypography.title2,
+                                    color = SettingsTokens.textPrimary
+                                )
+                            },
+                            navigationIcon = {
+                                IconButton(onClick = {
+                                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                                    onDismiss()
+                                }) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(34.dp)
+                                            .clip(CircleShape)
+                                            .background(SettingsTokens.cardFill)
+                                            .border(1.dp, SettingsTokens.cardBorder, CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.ArrowBack,
+                                            "Back",
+                                            tint = SettingsTokens.textPrimary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                            },
+                            actions = {
+                                Box(
+                                    modifier = Modifier
+                                        .padding(end = 12.dp)
+                                        .clip(LiquidGlassRadius.shapePill)
+                                        .background(SettingsTokens.accentSoft)
+                                        .border(1.dp, SettingsTokens.accent.copy(alpha = 0.18f), LiquidGlassRadius.shapePill)
+                                        .clickable {
+                                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                                            onSettingsChanged(LiquidGlassSettings())
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 7.dp)
+                                ) {
+                                    Text(
+                                        "Reset All",
+                                        style = LiquidGlassTypography.footnote,
+                                        color = SettingsTokens.accent
+                                    )
+                                }
+                            },
+                            colors = TopAppBarDefaults.topAppBarColors(
+                                containerColor = Color.Transparent
+                            )
+                        )
+                        HorizontalDivider(thickness = 0.5.dp, color = SettingsTokens.divider)
+                    }
+                },
+                containerColor = Color.Transparent
+            ) { padding ->
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding)
+                        .padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp)
+                ) {
+                    // === -1. DEFAULT LAUNCHER (prominent, top of Settings) ===
+                    item {
+                        DefaultLauncherCard(context = context)
+                        Spacer(Modifier.height(6.dp))
+                    }
+
+                    // === 0. GLOBAL THEMES ===
+                    item {
+                        SettingsSection(title = "Global Themes", icon = Icons.Rounded.Palette)
+                        val themes = listOf(
+                            LauncherTheme.Default,
+                            LauncherTheme.Cyberpunk,
+                            LauncherTheme.Frosted,
+                            LauncherTheme.Minimal
+                        )
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            themes.forEach { theme ->
+                                val isSelected = settings.currentThemeId == theme.id
+                                ThemePresetCard(
+                                    modifier = Modifier.weight(1f),
+                                    name = theme.name,
+                                    swatchColor = Color(theme.panelTintColor.toInt()),
+                                    isSelected = isSelected,
+                                    onClick = {
+                                        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                                        val newSettings = settings.copy(
+                                            currentThemeId = theme.id,
+                                            liquidGlassEnabled = theme.liquidGlassEnabled,
+                                            blurRadius = theme.blurRadius,
+                                            refractionHeight = theme.refractionHeight,
+                                            refractionAmount = theme.refractionAmount,
+                                            chromaticAberration = theme.chromaticAberration,
+                                            vibrancyEnabled = theme.vibrancyEnabled,
+                                            panelTintColor = theme.panelTintColor,
+                                            panelBackgroundAlpha = theme.panelBackgroundAlpha,
+                                            iconBackgroundAlpha = theme.iconBackgroundAlpha,
+                                            panelCornerRadius = theme.panelCornerRadius,
+                                            iconCornerRadius = theme.iconCornerRadius,
+                                            clockStyle = theme.clockStyle,
+                                            weatherStyle = theme.weatherStyle,
+                                            batteryStyle = theme.batteryStyle,
+                                            cyberpunkTheme = theme.cyberpunkTheme,
+                                            windowBlurEnabled = theme.windowBlurEnabled,
+                                            windowBlurRadius = theme.windowBlurRadius,
+                                            panelBlurEnabled = theme.panelBlurEnabled,
+                                            drawerBlurEnabled = theme.drawerBlurEnabled,
+                                            drawerBlurRadius = theme.drawerBlurRadius
+                                        )
+                                        onSettingsChanged(newSettings)
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    // === 1. WALLPAPER & LAYERS ===
+                    item {
+                        SettingsSection(title = "Wallpaper & Layers", icon = Icons.Rounded.Wallpaper)
+                        SettingsCard {
+                            SettingItem(
+                                title = "Background Layers",
+                                description = "Configure Day/Night cycles and Subject layer",
+                                onClick = onOpenWallpaperPicker
+                            )
+                            SettingsSeparator()
+                            SettingItem(
+                                title = "Secret Wallpaper",
+                                description = "Shown on home screen after unlocking",
+                                onClick = { showSecretPicker = true }
+                            )
+
+                            if (showSecretPicker) {
+                                SecretWallpaperPickerDialog(
+                                    currentConfig = launcherConfig,
+                                    onConfigChanged = onConfigChanged,
+                                    onDismiss = { showSecretPicker = false }
+                                )
+                            }
+                        }
+                    }
+
+                    // === 2. VISUAL EFFECTS ===
+                    item {
+                        Spacer(Modifier.height(16.dp))
+                        SettingsSection(title = "Visual Effects", icon = Icons.Rounded.AutoAwesome)
+                        SettingsCard {
+                            SwitchSetting(
+                                title = "Liquid Glass Effects",
+                                subtitle = "Master switch for all glass visual effects",
+                                checked = settings.liquidGlassEnabled,
+                                onCheckedChange = { onSettingsChanged(settings.copy(liquidGlassEnabled = it)) }
+                            )
+                            SettingsSeparator()
+                            SwitchSetting(
+                                title = "Enable Blur",
+                                subtitle = "Frosted glass transparency effect",
+                                checked = settings.blurEnabled,
+                                onCheckedChange = { onSettingsChanged(settings.copy(blurEnabled = it)) }
+                            )
+                            SliderSetting(
+                                title = "Blur Radius",
+                                value = settings.blurRadius,
+                                valueRange = 1f..50f,
+                                enabled = settings.blurEnabled,
+                                valueLabel = "${settings.blurRadius.toInt()}dp",
+                                onValueChange = { onSettingsChanged(settings.copy(blurRadius = it)) }
+                            )
+                            SettingsSeparator()
+                            SwitchSetting(
+                                title = "Glass Refraction",
+                                subtitle = "Realistic lens distortion effect",
+                                checked = settings.lensEnabled,
+                                onCheckedChange = { onSettingsChanged(settings.copy(lensEnabled = it)) }
+                            )
+                            SliderSetting(
+                                title = "Refraction Height",
+                                value = settings.refractionHeight,
+                                valueRange = 4f..32f,
+                                enabled = settings.lensEnabled,
+                                valueLabel = "${settings.refractionHeight.toInt()}dp",
+                                onValueChange = { onSettingsChanged(settings.copy(refractionHeight = it)) }
+                            )
+                            SliderSetting(
+                                title = "Refraction Intensity",
+                                value = settings.refractionAmount,
+                                valueRange = 4f..40f,
+                                enabled = settings.lensEnabled,
+                                valueLabel = "${settings.refractionAmount.toInt()}",
+                                onValueChange = { onSettingsChanged(settings.copy(refractionAmount = it)) }
+                            )
+                            SettingsSeparator()
+                            SwitchSetting(
+                                title = "Chromatic Aberration",
+                                subtitle = "Rainbow fringing on glass edges",
+                                checked = settings.chromaticAberration,
+                                onCheckedChange = { onSettingsChanged(settings.copy(chromaticAberration = it)) }
+                            )
+                            SettingsSeparator()
+                            SwitchSetting(
+                                title = "Vibrancy",
+                                subtitle = "Enhanced background saturation",
+                                checked = settings.vibrancyEnabled,
+                                onCheckedChange = { onSettingsChanged(settings.copy(vibrancyEnabled = it)) }
+                            )
+                            SettingsSeparator()
+                            ColorPickerSetting(
+                                title = "Panel Tint Color",
+                                currentColor = Color(settings.panelTintColor.toInt()),
+                                onColorSelected = {
+                                    onSettingsChanged(settings.copy(panelTintColor = it.toArgb().toLong()))
+                                }
+                            )
+                            SettingsSeparator()
+                            SwitchSetting(
+                                title = "Media Art Glow Effect",
+                                subtitle = "Replace animated art with a glowing still",
+                                checked = settings.mediaArtGlowEnabled,
+                                onCheckedChange = { onSettingsChanged(settings.copy(mediaArtGlowEnabled = it)) }
+                            )
+                            SettingsSeparator()
+                            SwitchSetting(
+                                title = "LED Matrix Text",
+                                subtitle = "Apply digital pixel effect to UI text",
+                                checked = settings.ledMatrixEnabled,
+                                onCheckedChange = { onSettingsChanged(settings.copy(ledMatrixEnabled = it)) }
+                            )
+                            SettingsSeparator()
+                            SwitchSetting(
+                                title = "Scrolling Media Info",
+                                subtitle = "Scroll long song titles on lock screen",
+                                checked = settings.scrollingTextEnabled,
+                                onCheckedChange = { onSettingsChanged(settings.copy(scrollingTextEnabled = it)) }
+                            )
+                            SettingsSeparator()
+                            SwitchSetting(
+                                title = "Interactive Lock Controls",
+                                subtitle = "Show playback buttons over the lock screen",
+                                checked = settings.enableLockScreenControls,
+                                onCheckedChange = { enabled ->
+                                    if (enabled) {
+                                        val componentName = ComponentName(context.packageName, "com.liqora.launcher.services.MediaListenerService")
+                                        val flat = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
+                                        val isEnabled = flat != null && flat.contains(componentName.flattenToString())
+
+                                        if (!isEnabled) {
+                                            Toast.makeText(context, "Grant Notification Access to enable", Toast.LENGTH_LONG).show()
+                                            try {
+                                                context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                                            } catch (e: Exception) {}
+                                            return@SwitchSetting
+                                        }
+                                    }
+                                    onSettingsChanged(settings.copy(enableLockScreenControls = enabled))
+                                }
+                            )
+                            SettingsSeparator()
+                            SliderSetting(
+                                title = "Panel Transparency",
+                                value = settings.panelBackgroundAlpha,
+                                valueRange = 0.05f..0.4f,
+                                valueLabel = "${(settings.panelBackgroundAlpha * 100).toInt()}%",
+                                onValueChange = { onSettingsChanged(settings.copy(panelBackgroundAlpha = it)) }
+                            )
+                            SliderSetting(
+                                title = "Drawer Transparency",
+                                value = settings.drawerBackgroundAlpha,
+                                valueRange = 0.05f..1.0f,
+                                valueLabel = "${(settings.drawerBackgroundAlpha * 100).toInt()}%",
+                                onValueChange = { onSettingsChanged(settings.copy(drawerBackgroundAlpha = it)) }
+                            )
+                            SettingsSeparator()
+                            SliderSetting(
+                                title = "Panel Corner Radius",
+                                value = settings.panelCornerRadius,
+                                valueRange = 8f..32f,
+                                valueLabel = "${settings.panelCornerRadius.toInt()}dp",
+                                onValueChange = { onSettingsChanged(settings.copy(panelCornerRadius = it)) }
+                            )
+                            SettingsSeparator()
+                            SwitchSetting(
+                                title = "Panel Blur",
+                                subtitle = "Enable background blur for home screen panels",
+                                checked = settings.panelBlurEnabled,
+                                onCheckedChange = { onSettingsChanged(settings.copy(panelBlurEnabled = it)) }
+                            )
+                            SwitchSetting(
+                                title = "App Drawer Blur",
+                                subtitle = "Blur effect for the application list",
+                                checked = settings.drawerBlurEnabled,
+                                onCheckedChange = { onSettingsChanged(settings.copy(drawerBlurEnabled = it)) }
+                            )
+                            SliderSetting(
+                                title = "Drawer Blur Radius",
+                                value = settings.drawerBlurRadius,
+                                valueRange = 4f..60f,
+                                enabled = settings.drawerBlurEnabled,
+                                valueLabel = "${settings.drawerBlurRadius.toInt()}dp",
+                                onValueChange = { onSettingsChanged(settings.copy(drawerBlurRadius = it)) }
+                            )
+                            SettingsSeparator()
+                            SwitchSetting(
+                                title = "Window Blur",
+                                subtitle = "Blur the background wallpaper globally",
+                                checked = settings.windowBlurEnabled,
+                                onCheckedChange = { onSettingsChanged(settings.copy(windowBlurEnabled = it)) }
+                            )
+                            SliderSetting(
+                                title = "Window Blur Radius",
+                                value = settings.windowBlurRadius,
+                                valueRange = 4f..60f,
+                                enabled = settings.windowBlurEnabled,
+                                valueLabel = "${settings.windowBlurRadius.toInt()}dp",
+                                onValueChange = { onSettingsChanged(settings.copy(windowBlurRadius = it)) }
+                            )
+                        }
+                    }
+
+                    // === 3. GRID & LAYOUT ===
+                    item {
+                        Spacer(Modifier.height(16.dp))
+                        SettingsSection(title = "Grid & Layout", icon = Icons.Rounded.GridView)
+                        SettingsCard {
+                            SliderSetting(
+                                title = "Grid Columns",
+                                value = settings.gridColumns.toFloat(),
+                                valueRange = 3f..6f,
+                                steps = 2,
+                                valueLabel = "${settings.gridColumns}",
+                                onValueChange = { onSettingsChanged(settings.copy(gridColumns = it.toInt())) }
+                            )
+                            SliderSetting(
+                                title = "Grid Rows",
+                                value = settings.gridRows.toFloat(),
+                                valueRange = 4f..8f,
+                                steps = 3,
+                                valueLabel = "${settings.gridRows}",
+                                onValueChange = { onSettingsChanged(settings.copy(gridRows = it.toInt())) }
+                            )
+                            SettingsSeparator()
+                            SliderSetting(
+                                title = "App Icon Size",
+                                value = settings.appTileScale,
+                                valueRange = 0.5f..1.5f,
+                                valueLabel = "${(settings.appTileScale * 100).toInt()}%",
+                                onValueChange = { onSettingsChanged(settings.copy(appTileScale = it)) }
+                            )
+                            SliderSetting(
+                                title = "Icon Corner Radius",
+                                value = settings.iconCornerRadius,
+                                valueRange = 4f..24f,
+                                valueLabel = "${settings.iconCornerRadius.toInt()}dp",
+                                onValueChange = { onSettingsChanged(settings.copy(iconCornerRadius = it)) }
+                            )
+                            SliderSetting(
+                                title = "Icon Transparency",
+                                value = settings.iconBackgroundAlpha,
+                                valueRange = 0.05f..0.3f,
+                                valueLabel = "${(settings.iconBackgroundAlpha * 100).toInt()}%",
+                                onValueChange = { onSettingsChanged(settings.copy(iconBackgroundAlpha = it)) }
+                            )
+                            SettingsSeparator()
+                            SwitchSetting(
+                                title = "Show App Labels",
+                                subtitle = "Display names below icons",
+                                checked = settings.showAppLabels,
+                                onCheckedChange = { onSettingsChanged(settings.copy(showAppLabels = it)) }
+                            )
+                        }
+                    }
+
+                    // === 4. THEMES & ICONS ===
+                    item {
+                        Spacer(Modifier.height(16.dp))
+                        SettingsSection(title = "Themes & Icons", icon = Icons.Rounded.Palette)
+                        SettingsCard {
+                            SwitchSetting(
+                                title = "Cyberpunk Theme",
+                                subtitle = "Force all widgets to use neon aesthetics",
+                                checked = settings.cyberpunkTheme,
+                                onCheckedChange = {
+                                    val newTheme = it
+                                    onSettingsChanged(settings.copy(
+                                        cyberpunkTheme = newTheme,
+                                        clockStyle = if (newTheme) "Cyberpunk" else settings.clockStyle,
+                                        weatherStyle = if (newTheme) "Cyberpunk" else settings.weatherStyle,
+                                        batteryStyle = if (newTheme) "Cyberpunk" else settings.batteryStyle
+                                    ))
+                                }
+                            )
+                            SettingsSeparator()
+                            // Icon Pack Picker
+                            val currentPackName = settings.iconPackPackageName.ifEmpty { "Default" }
+
+                            SettingItem(
+                                title = "Icon Pack",
+                                description = if (settings.iconPackPackageName.isEmpty()) "Default" else "Active: $currentPackName",
+                                onClick = { showIconPackPicker = true }
+                            )
+
+                            if (showIconPackPicker) {
+                                IconPackPickerDialog(
+                                    currentPack = settings.iconPackPackageName,
+                                    onPackSelected = { pkg ->
+                                        onSettingsChanged(settings.copy(iconPackPackageName = pkg))
+                                        showIconPackPicker = false
+                                    },
+                                    onDismiss = { showIconPackPicker = false }
+                                )
+                            }
+                            SettingsSeparator()
+                            SwitchSetting(
+                                title = "Icon Pack in Drawer",
+                                subtitle = "Apply custom icons to app drawer",
+                                checked = settings.useIconPackInAppDrawer,
+                                onCheckedChange = { onSettingsChanged(settings.copy(useIconPackInAppDrawer = it)) }
+                            )
+                        }
+                    }
+
+                    // === 5. WIDGET STYLES ===
+                    item {
+                        Spacer(Modifier.height(16.dp))
+                        SettingsSection(title = "Widget Styles", icon = Icons.Rounded.Style)
+                        SettingsCard {
+                            val styles = listOf("Classic", "Headline", "Vertical", "Minimal", "Analog", "Cyberpunk")
+                            StyleSelector(
+                                title = "Clock Style",
+                                currentStyle = settings.clockStyle,
+                                options = styles,
+                                onStyleSelected = { onSettingsChanged(settings.copy(clockStyle = it)) }
+                            )
+                            SettingsSeparator()
+                            StyleSelector(
+                                title = "Weather Style",
+                                currentStyle = settings.weatherStyle,
+                                options = styles,
+                                onStyleSelected = { onSettingsChanged(settings.copy(weatherStyle = it)) }
+                            )
+                            SettingsSeparator()
+                            StyleSelector(
+                                title = "Battery Style",
+                                currentStyle = settings.batteryStyle,
+                                options = styles,
+                                onStyleSelected = { onSettingsChanged(settings.copy(batteryStyle = it)) }
+                            )
+                        }
+                    }
+
+                    // === 6. INTERACTION ===
+                    item {
+                        Spacer(Modifier.height(16.dp))
+                        SettingsSection(title = "Interaction", icon = Icons.Rounded.Explore)
+                        SettingsCard {
+                            SliderSetting(
+                                title = "Drag Elasticity",
+                                value = settings.dragSpringDamping,
+                                valueRange = 0.3f..1.0f,
+                                valueLabel = String.format("%.1f", settings.dragSpringDamping),
+                                onValueChange = { onSettingsChanged(settings.copy(dragSpringDamping = it)) }
+                            )
+                            SliderSetting(
+                                title = "Drag Speed",
+                                value = settings.dragSpringStiffness,
+                                valueRange = 50f..500f,
+                                valueLabel = "${settings.dragSpringStiffness.toInt()}",
+                                onValueChange = { onSettingsChanged(settings.copy(dragSpringStiffness = it)) }
+                            )
+                            SettingsSeparator()
+                            SwitchSetting(
+                                title = "Parallax Effect",
+                                subtitle = "Background moves with device tilt",
+                                checked = settings.enableParallax,
+                                onCheckedChange = { onSettingsChanged(settings.copy(enableParallax = it)) }
+                            )
+                            SliderSetting(
+                                title = "Parallax Intensity",
+                                value = settings.parallaxIntensity,
+                                valueRange = 0f..2f,
+                                enabled = settings.enableParallax,
+                                valueLabel = String.format("%.2f", settings.parallaxIntensity),
+                                onValueChange = { onSettingsChanged(settings.copy(parallaxIntensity = it)) }
+                            )
+                        }
+                    }
+
+                    // === 7. INTEGRATIONS ===
+                    item {
+                        Spacer(Modifier.height(16.dp))
+                        SettingsSection(title = "Integrations", icon = Icons.Rounded.Cloud)
+                        SettingsCard {
+                            SwitchSetting(
+                                title = "Notification Dots",
+                                subtitle = "Show badge on apps with notifications",
+                                checked = settings.showNotificationDots,
+                                onCheckedChange = { enabled ->
+                                    if (enabled) {
+                                        val componentName = ComponentName(context.packageName, "com.liqora.launcher.services.MediaListenerService")
+                                        val flat = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
+                                        val isEnabled = flat != null && flat.contains(componentName.flattenToString())
+
+                                        if (!isEnabled) {
+                                            Toast.makeText(context, "Grant Notification Access to enable", Toast.LENGTH_LONG).show()
+                                            try {
+                                                context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                                            } catch (e: Exception) {}
+                                            return@SwitchSetting
+                                        }
+                                    }
+                                    onSettingsChanged(settings.copy(showNotificationDots = enabled))
+                                }
+                            )
+                            ColorPickerSetting(
+                                title = "Notification Dot Color",
+                                currentColor = Color(settings.notificationDotColor.toInt()),
+                                onColorSelected = {
+                                    onSettingsChanged(settings.copy(notificationDotColor = it.toArgb().toLong()))
+                                },
+                                enabled = !settings.liquidGlassNotificationDots
+                            )
+                            SwitchSetting(
+                                title = "Liquid Glass Dots",
+                                subtitle = "Apply glass effect to notification badges",
+                                checked = settings.liquidGlassNotificationDots,
+                                onCheckedChange = { onSettingsChanged(settings.copy(liquidGlassNotificationDots = it)) }
+                            )
+                            SettingsSeparator()
+                            SwitchSetting(
+                                title = "Lock Screen Media Art",
+                                subtitle = "Show full screen album art on lock screen",
+                                checked = settings.enableLockScreenMediaArt,
+                                onCheckedChange = { enabled ->
+                                    if (enabled) {
+                                        val componentName = ComponentName(context.packageName, "com.liqora.launcher.services.MediaListenerService")
+                                        val flat = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
+                                        val isEnabled = flat != null && flat.contains(componentName.flattenToString())
+
+                                        if (!isEnabled) {
+                                            Toast.makeText(context, "Grant Notification Access to enable", Toast.LENGTH_LONG).show()
+                                            try {
+                                                context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                                            } catch (e: Exception) {}
+                                            return@SwitchSetting
+                                        }
+                                    }
+                                    onSettingsChanged(settings.copy(enableLockScreenMediaArt = enabled))
+                                }
+                            )
+                            SwitchSetting(
+                                title = "Home Screen Media Art",
+                                subtitle = "Show full screen album art on home screen",
+                                checked = settings.enableHomeMediaArt,
+                                onCheckedChange = { enabled ->
+                                    if (enabled) {
+                                        val componentName = ComponentName(context.packageName, "com.liqora.launcher.services.MediaListenerService")
+                                        val flat = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
+                                        val isEnabled = flat != null && flat.contains(componentName.flattenToString())
+
+                                        if (!isEnabled) {
+                                            Toast.makeText(context, "Grant Notification Access to enable", Toast.LENGTH_LONG).show()
+                                            try {
+                                                context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                                            } catch (e: Exception) {}
+                                            return@SwitchSetting
+                                        }
+                                    }
+                                    onSettingsChanged(settings.copy(enableHomeMediaArt = enabled))
+                                }
+                            )
+                            SettingsSeparator()
+                            SettingItem(
+                                title = "Custom Album Art",
+                                description = "Override album art for specific songs",
+                                onClick = { showCustomArtManager = true }
+                            )
+
+                            if (showCustomArtManager) {
+                                CustomArtManagerScreen(onDismiss = { showCustomArtManager = false })
+                            }
+
+                            SettingsSeparator()
+                            StyleSelector(
+                                title = "Weather Source",
+                                currentStyle = settings.weatherSource,
+                                options = listOf("OpenWeather", "BreezyWeather"),
+                                onStyleSelected = { onSettingsChanged(settings.copy(weatherSource = it)) }
+                            )
+
+                            if (settings.weatherSource == "OpenWeather") {
+                                SettingsSeparator()
+                                // OpenWeather API Key
+                                SettingItem(
+                                    title = "OpenWeather API Key",
+                                    description = if (settings.openWeatherApiKey.isBlank()) "Not set" else "********",
+                                    onClick = { editingWeatherKey = true }
+                                )
+
+                                if (editingWeatherKey) {
+                                    Dialog(onDismissRequest = { editingWeatherKey = false }) {
+                                        Surface(shape = RoundedCornerShape(12.dp), color = Color(0xFF1A1A24)) {
+                                            Column(modifier = Modifier.padding(16.dp)) {
+                                                Text("OpenWeather API Key", color = Color.White)
+                                                Spacer(Modifier.height(8.dp))
+                                                var keyText by remember { mutableStateOf(settings.openWeatherApiKey) }
+                                                OutlinedTextField(
+                                                    value = keyText,
+                                                    onValueChange = { keyText = it },
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    singleLine = true
+                                                )
+                                                Spacer(Modifier.height(12.dp))
+                                                Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                                                    TextButton(onClick = { editingWeatherKey = false }) { Text("Cancel") }
+                                                    TextButton(onClick = { onSettingsChanged(settings.copy(openWeatherApiKey = keyText)); editingWeatherKey = false }) { Text("Save") }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            SettingItem(
+                                title = "Play Integrity API Key",
+                                description = if (settings.playIntegrityCloudProjectNumber.isBlank()) "Not set" else settings.playIntegrityCloudProjectNumber,
+                                onClick = { editingIntegrityKey = true }
+                            )
+
+                            if (editingIntegrityKey) {
+                                Dialog(onDismissRequest = { editingIntegrityKey = false }) {
+                                    Surface(shape = RoundedCornerShape(12.dp), color = Color(0xFF1A1A24)) {
+                                        Column(modifier = Modifier.padding(16.dp)) {
+                                            Text("Google Cloud Project Number", color = Color.White)
+                                            Spacer(Modifier.height(8.dp))
+                                            var text by remember { mutableStateOf(settings.playIntegrityCloudProjectNumber) }
+                                            OutlinedTextField(
+                                                value = text,
+                                                onValueChange = { text = it },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                singleLine = true,
+                                                placeholder = { Text("1234567890") }
+                                            )
+                                            Spacer(Modifier.height(12.dp))
+                                            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                                                TextButton(onClick = { editingIntegrityKey = false }) { Text("Cancel") }
+                                                TextButton(onClick = {
+                                                    onSettingsChanged(settings.copy(
+                                                        playIntegrityCloudProjectNumber = text,
+                                                        playIntegrityEnabled = text.isNotBlank()
+                                                    ))
+                                                    editingIntegrityKey = false
+                                                }) { Text("Save") }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            SettingsSeparator()
+                            val units = listOf("F", "C")
+                            StyleSelector(
+                                title = "Temperature Unit",
+                                currentStyle = settings.weatherUnit,
+                                options = units,
+                                onStyleSelected = { onSettingsChanged(settings.copy(weatherUnit = it)) }
+                            )
+                            SettingsSeparator()
+                            SwitchSetting(
+                                title = "Search Widget opens Browser",
+                                subtitle = "Tapping search opens browser immediately",
+                                checked = settings.searchWidgetOpensBrowserOnTap,
+                                onCheckedChange = { onSettingsChanged(settings.copy(searchWidgetOpensBrowserOnTap = it)) }
+                            )
+                        }
+                    }
+
+                    // === 8. MAINTENANCE ===
+                    item {
+                        Spacer(Modifier.height(16.dp))
+                        SettingsSection(title = "Maintenance", icon = Icons.Rounded.Build)
+                        SettingsCard {
+                            SettingItem(
+                                title = "Export Schematic",
+                                description = "Save layout and settings to file",
+                                onClick = onExportSchematic
+                            )
+                            SettingsSeparator()
+                            SettingItem(
+                                title = "Import Schematic",
+                                description = "Restore layout and settings from file",
+                                onClick = onImportSchematic
+                            )
+                        }
+                    }
+
+                    item {
+                        if (showDevModeConfirmation) {
+                            AlertDialog(
+                                onDismissRequest = { showDevModeConfirmation = false },
+                                title = { Text("Enable Developer Mode?") },
+                                text = { Text("Only enable if you know what you are doing. Instability may occur.") },
+                                confirmButton = {
+                                    TextButton(onClick = {
+                                        onSettingsChanged(settings.copy(showDebugSettings = true))
+                                        showDevModeConfirmation = false
+                                    }) {
+                                        Text("Enable", color = Color(0xFFEF4444))
+                                    }
+                                },
+                                dismissButton = {
+                                    TextButton(onClick = { showDevModeConfirmation = false }) {
+                                        Text("Cancel")
+                                    }
+                                },
+                                containerColor = Color(0xFF1A1A24),
+                                titleContentColor = Color.White,
+                                textContentColor = Color.White.copy(alpha = 0.8f)
+                            )
+                        }
+
+                        SettingsCard {
+                            SwitchSetting(
+                                title = "Developer Mode",
+                                subtitle = "Access advanced configuration options",
+                                checked = settings.showDebugSettings,
+                                onCheckedChange = { enabled ->
+                                    if (enabled) showDevModeConfirmation = true
+                                    else onSettingsChanged(settings.copy(showDebugSettings = false))
+                                }
+                            )
+
+                            if (settings.showDebugSettings) {
+                                SettingsSeparator()
+                                SwitchSetting(
+                                    title = "Show Debug Logs",
+                                    subtitle = "Overlay internal logs on lock screen",
+                                    checked = settings.showDebugLogs,
+                                    onCheckedChange = { onSettingsChanged(settings.copy(showDebugLogs = it)) }
+                                )
+
+                                SettingsSeparator()
+                                SettingItem(
+                                    title = "GitHub Update URL",
+                                    description = if (settings.githubUpdateUrl.isBlank()) "Not set" else settings.githubUpdateUrl,
+                                    onClick = { editingGitHubUrl = true }
+                                )
+
+                                if (editingGitHubUrl) {
+                                    Dialog(onDismissRequest = { editingGitHubUrl = false }) {
+                                        Surface(shape = RoundedCornerShape(12.dp), color = Color(0xFF1A1A24)) {
+                                            Column(modifier = Modifier.padding(16.dp)) {
+                                                Text("GitHub Update URL", color = Color.White)
+                                                Spacer(Modifier.height(8.dp))
+                                                var text by remember { mutableStateOf(settings.githubUpdateUrl) }
+                                                OutlinedTextField(
+                                                    value = text,
+                                                    onValueChange = { text = it },
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    singleLine = true,
+                                                    placeholder = { Text("https://github.com/user/repo/actions") }
+                                                )
+                                                Spacer(Modifier.height(12.dp))
+                                                Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                                                    TextButton(onClick = { editingGitHubUrl = false }) { Text("Cancel") }
+                                                    TextButton(onClick = { onSettingsChanged(settings.copy(githubUpdateUrl = text)); editingGitHubUrl = false }) { Text("Save") }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                SettingsSeparator()
+                                SettingItem(
+                                    title = "GitHub Token (Optional)",
+                                    description = if (settings.githubToken.isBlank()) "Not set" else "********",
+                                    onClick = { editingGitHubToken = true }
+                                )
+
+                                if (editingGitHubToken) {
+                                    Dialog(onDismissRequest = { editingGitHubToken = false }) {
+                                        Surface(shape = RoundedCornerShape(12.dp), color = Color(0xFF1A1A24)) {
+                                            Column(modifier = Modifier.padding(16.dp)) {
+                                                Text("GitHub Token", color = Color.White)
+                                                Spacer(Modifier.height(8.dp))
+                                                var text by remember { mutableStateOf(settings.githubToken) }
+                                                OutlinedTextField(
+                                                    value = text,
+                                                    onValueChange = { text = it },
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    singleLine = true,
+                                                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation()
+                                                )
+                                                Spacer(Modifier.height(12.dp))
+                                                Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                                                    TextButton(onClick = { editingGitHubToken = false }) { Text("Cancel") }
+                                                    TextButton(onClick = { onSettingsChanged(settings.copy(githubToken = text)); editingGitHubToken = false }) { Text("Save") }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                SettingsSeparator()
+                                SwitchSetting(
+                                    title = "Automatic Updates",
+                                    subtitle = "Check and install updates from GitHub",
+                                    checked = settings.autoUpdateEnabled,
+                                    onCheckedChange = { onSettingsChanged(settings.copy(autoUpdateEnabled = it)) }
+                                )
+
+                                SettingsSeparator()
+                                SettingItem(
+                                    title = "Check for Updates",
+                                    description = "Manually check for updates from GitHub",
+                                    onClick = {
+                                        if (settings.githubUpdateUrl.isBlank()) {
+                                            Toast.makeText(context, "Please set GitHub Update URL", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            Toast.makeText(context, "Checking for updates...", Toast.LENGTH_SHORT).show()
+                                            scope.launch {
+                                                com.liqora.launcher.helpers.AutoUpdater.checkForUpdates(
+                                                    context = context,
+                                                    url = settings.githubUpdateUrl,
+                                                    token = settings.githubToken,
+                                                    isManual = true
+                                                )
+                                            }
+                                        }
+                                    }
+                                )
+
+                                SettingsSeparator()
+                                SettingItem(
+                                    title = "Art Debugger",
+                                    description = "Test animated cover fetching",
+                                    onClick = { showArtDebugger = true }
+                                )
+
+                                if (showArtDebugger) {
+                                    AppleMusicDebugDialog(onDismiss = { showArtDebugger = false })
+                                }
+                            }
+                        }
+                    }
+
+                    item {
+                        Spacer(Modifier.height(32.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThemePresetCard(
+    modifier: Modifier = Modifier,
+    name: String,
+    swatchColor: Color,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.94f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "themeCardScale"
+    )
+    val bgColor by animateColorAsState(
+        targetValue = if (isSelected) SettingsTokens.accentSoft else SettingsTokens.cardFill,
+        label = "themeCardBg"
+    )
+    val borderColor by animateColorAsState(
+        targetValue = if (isSelected) SettingsTokens.accent else SettingsTokens.cardBorder,
+        label = "themeCardBorder"
+    )
+
+    Column(
+        modifier = modifier
+            .scale(scale)
+            .clip(SettingsTokens.chipShape)
+            .background(bgColor)
+            .border(
+                width = if (isSelected) 1.5.dp else 1.dp,
+                color = borderColor,
+                shape = SettingsTokens.chipShape
+            )
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            )
+            .padding(vertical = 14.dp, horizontal = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(
+                    Brush.radialGradient(
+                        listOf(swatchColor, swatchColor.copy(alpha = 0.7f))
+                    )
+                )
+                .border(1.dp, Color.White.copy(alpha = 0.25f), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            if (isSelected) {
+                Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(20.dp))
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            name,
+            color = SettingsTokens.textPrimary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun SettingsSection(
+    title: String,
+    icon: ImageVector
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(top = LiquidGlassSpacing.xxs, bottom = LiquidGlassSpacing.sm)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(LiquidGlassRadius.shapeSm)
+                .background(SettingsTokens.accentSoft)
+                .border(1.dp, SettingsTokens.accent.copy(alpha = 0.16f), LiquidGlassRadius.shapeSm),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = SettingsTokens.accent,
+                modifier = Modifier.size(15.dp)
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = title.uppercase(),
+            style = LiquidGlassTypography.caption,
+            color = SettingsTokens.textSecondary
+        )
+    }
+}
+
+@Composable
+private fun SettingsCard(
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .premiumGlow(
+                glowColor = SettingsTokens.accent,
+                shape = LiquidGlassRadius.shapeLg,
+                level = LiquidGlassElevation.resting
+            )
+            .border(1.dp, SettingsTokens.cardBorder, LiquidGlassRadius.shapeLg),
+        color = SettingsTokens.cardFill,
+        shape = LiquidGlassRadius.shapeLg,
+        shadowElevation = 0.dp
+    ) {
+        Column(
+            modifier = Modifier.padding(vertical = 6.dp),
+            content = content
+        )
+    }
+}
+
+@Composable
+private fun SettingsSeparator() {
+    HorizontalDivider(
+        modifier = Modifier.padding(horizontal = 16.dp),
+        thickness = 0.5.dp,
+        color = SettingsTokens.divider
+    )
+}
+
+@Composable
+private fun SwitchSetting(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val view = LocalView.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 11.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, style = LiquidGlassTypography.callout, color = SettingsTokens.textPrimary)
+            if (subtitle.isNotEmpty()) {
+                Spacer(Modifier.height(2.dp))
+                Text(subtitle, style = LiquidGlassTypography.footnote, color = SettingsTokens.textSecondary, lineHeight = 15.sp)
+            }
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                onCheckedChange(it)
+            },
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = SettingsTokens.accent,
+                checkedBorderColor = Color.Transparent,
+                uncheckedThumbColor = Color.White.copy(alpha = 0.9f),
+                uncheckedTrackColor = SettingsTokens.trackOff,
+                uncheckedBorderColor = Color.Transparent
+            )
+        )
+    }
+}
+
+@Composable
+private fun SliderSetting(
+    title: String,
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    valueLabel: String,
+    onValueChange: (Float) -> Unit,
+    enabled: Boolean = true,
+    steps: Int = 0
+) {
+    val view = LocalView.current
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                title,
+                color = if (enabled) SettingsTokens.textPrimary else SettingsTokens.textSecondary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (enabled) SettingsTokens.accentSoft else Color.Transparent)
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    valueLabel,
+                    color = if (enabled) SettingsTokens.accent else SettingsTokens.textSecondary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+        Slider(
+            value = value,
+            onValueChange = {
+                val isSmallRange = (valueRange.endInclusive - valueRange.start) < 5f
+                val threshold = if (isSmallRange) 0.1f else 1.0f
+
+                val oldQuantized = (value / threshold).toInt()
+                val newQuantized = (it / threshold).toInt()
+
+                if (oldQuantized != newQuantized) {
+                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                }
+                onValueChange(it)
+            },
+            valueRange = valueRange,
+            steps = steps,
+            enabled = enabled,
+            colors = SliderDefaults.colors(
+                thumbColor = SettingsTokens.accent,
+                activeTrackColor = SettingsTokens.accent,
+                inactiveTrackColor = SettingsTokens.trackOff,
+                disabledThumbColor = Color.Gray,
+                disabledActiveTrackColor = Color.Gray,
+                disabledInactiveTrackColor = SettingsTokens.trackOff
+            )
+        )
+    }
+}
+
+@Composable
+private fun ColorPickerSetting(
+    title: String,
+    currentColor: Color,
+    onColorSelected: (Color) -> Unit,
+    enabled: Boolean = true
+) {
+    var showPicker by remember { mutableStateOf(false) }
+    val view = LocalView.current
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (enabled) Modifier.clickable {
+                view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                showPicker = true
+            } else Modifier)
+            .padding(horizontal = 16.dp, vertical = 11.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(title, color = if (enabled) SettingsTokens.textPrimary else SettingsTokens.textSecondary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        Box(
+            modifier = Modifier
+                .size(30.dp)
+                .clip(CircleShape)
+                .background(if (enabled) currentColor else Color.Gray)
+                .border(2.dp, Color.White.copy(alpha = if (enabled) 0.35f else 0.1f), CircleShape)
+        )
+    }
+
+    if (showPicker) {
+        GlassSettingsColorPicker(
+            currentColor = currentColor,
+            onColorSelected = {
+                onColorSelected(it)
+                showPicker = false
+            },
+            onDismiss = { showPicker = false }
+        )
+    }
+}
+
+@Composable
+private fun GlassSettingsColorPicker(
+    currentColor: Color,
+    onColorSelected: (Color) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val view = LocalView.current
+    val presetColors = listOf(
+        Color(0xFF6366F1), // Indigo
+        Color(0xFF8B5CF6), // Violet
+        Color(0xFFA855F7), // Purple
+        Color(0xFFEC4899), // Pink
+        Color(0xFFEF4444), // Red
+        Color(0xFFF97316), // Orange
+        Color(0xFFFBBF24), // Amber
+        Color(0xFF84CC16), // Lime
+        Color(0xFF22C55E), // Green
+        Color(0xFF14B8A6), // Teal
+        Color(0xFF06B6D4), // Cyan
+        Color(0xFF3B82F6), // Blue
+        Color(0xFF64748B), // Slate
+        Color(0xFF78716C), // Stone
+        Color(0xFFFFFFFF), // White
+        Color(0xFF000000), // Black
+    )
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(26.dp),
+            color = SettingsTokens.dialogSurface,
+            modifier = Modifier.border(1.dp, SettingsTokens.cardBorder, RoundedCornerShape(26.dp))
+        ) {
+            Column(modifier = Modifier.padding(24.dp)) {
+                Text(
+                    "Choose Color",
+                    color = SettingsTokens.textPrimary,
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(Modifier.height(18.dp))
+
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(4),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                    modifier = Modifier.height(210.dp)
+                ) {
+                    items(presetColors) { color ->
+                        val isSelected = color == currentColor
+                        Box(
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(color)
+                                .border(
+                                    width = if (isSelected) 3.dp else 1.dp,
+                                    color = if (isSelected) Color.White else Color.White.copy(alpha = 0.2f),
+                                    shape = CircleShape
+                                )
+                                .clickable {
+                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                    onColorSelected(color)
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isSelected) {
+                                Icon(
+                                    Icons.Rounded.Check,
+                                    contentDescription = "Selected",
+                                    tint = if (color == Color.White || color == Color(0xFFFBBF24))
+                                        Color.Black else Color.White,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(18.dp))
+
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text("Cancel", color = SettingsTokens.textSecondary, fontWeight = FontWeight.Medium)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StyleSelector(
+    title: String,
+    currentStyle: String,
+    options: List<String>,
+    onStyleSelected: (String) -> Unit
+) {
+    val view = LocalView.current
+    Column(
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+    ) {
+        Text(title, color = SettingsTokens.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            options.forEach { style ->
+                val isSelected = style == currentStyle
+                FilterChip(
+                    selected = isSelected,
+                    onClick = {
+                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        onStyleSelected(style)
+                    },
+                    label = { Text(style, fontWeight = FontWeight.Medium) },
+                    shape = RoundedCornerShape(10.dp),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = SettingsTokens.accent,
+                        selectedLabelColor = Color.White,
+                        containerColor = SettingsTokens.cardFill,
+                        labelColor = SettingsTokens.textSecondary
+                    ),
+                    border = FilterChipDefaults.filterChipBorder(
+                        borderColor = SettingsTokens.cardBorder,
+                        selectedBorderColor = Color.Transparent,
+                        enabled = true,
+                        selected = isSelected
+                    )
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun IconPackPickerDialog(
+    currentPack: String,
+    onPackSelected: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val view = LocalView.current
+    var iconPacks by remember { mutableStateOf<List<com.liqora.launcher.helpers.IconPackInfo>>(emptyList()) }
+
+    LaunchedEffect(Unit) {
+        iconPacks = com.liqora.launcher.helpers.IconPackHelper.getIconPacks(context)
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(22.dp),
+            color = SettingsTokens.dialogSurface,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 400.dp)
+                .border(1.dp, SettingsTokens.cardBorder, RoundedCornerShape(22.dp))
+        ) {
+            Column(modifier = Modifier.padding(18.dp)) {
+                Text(
+                    "Select Icon Pack",
+                    color = SettingsTokens.textPrimary,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(14.dp))
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                                    onPackSelected("")
+                                }
+                                .background(if (currentPack.isEmpty()) SettingsTokens.accentSoft else Color.Transparent)
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Default", color = SettingsTokens.textPrimary, fontWeight = FontWeight.Medium)
+                            if (currentPack.isEmpty()) {
+                                Spacer(Modifier.weight(1f))
+                                Icon(Icons.Rounded.Check, null, tint = SettingsTokens.accent)
+                            }
+                        }
+                    }
+
+                    items(iconPacks) { pack ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                                    onPackSelected(pack.packageName)
+                                }
+                                .background(if (currentPack == pack.packageName) SettingsTokens.accentSoft else Color.Transparent)
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(pack.label, color = SettingsTokens.textPrimary, fontWeight = FontWeight.Medium)
+                            if (currentPack == pack.packageName) {
+                                Spacer(Modifier.weight(1f))
+                                Icon(Icons.Rounded.Check, null, tint = SettingsTokens.accent)
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text("Cancel", color = SettingsTokens.textSecondary, fontWeight = FontWeight.Medium)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SecretWallpaperPickerDialog(
+    currentConfig: LauncherConfig,
+    onConfigChanged: (LauncherConfig) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val pickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: android.net.Uri? ->
+        if (uri != null) {
+            val persistedPath = persistWallpaperUri(context, uri)
+            onConfigChanged(currentConfig.copy(wallpaperSecretUri = persistedPath))
+            Toast.makeText(context, "Secret wallpaper set!", Toast.LENGTH_SHORT).show()
+            onDismiss()
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Secret Wallpaper") },
+        text = { Text("Choose an image that will only be shown on your home screen after unlocking.") },
+        confirmButton = {
+            TextButton(onClick = {
+                pickerLauncher.launch(
+                    androidx.activity.result.PickVisualMediaRequest(
+                        ActivityResultContracts.PickVisualMedia.ImageAndVideo
+                    )
+                )
+            }) {
+                Text("Pick Image/Video")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                onConfigChanged(currentConfig.copy(wallpaperSecretUri = null))
+                onDismiss()
+            }) {
+                Text("Clear", color = Color.Red)
+            }
+        },
+        containerColor = SettingsTokens.dialogSurface,
+        titleContentColor = SettingsTokens.textPrimary,
+        textContentColor = SettingsTokens.textSecondary,
+        shape = RoundedCornerShape(22.dp)
+    )
+}
+
+
+@Composable
+private fun DefaultLauncherCard(context: android.content.Context) {
+    val view = LocalView.current
+
+    var isDefault by remember { mutableStateOf(LauncherUtils.isDefaultLauncher(context)) }
+
+    // Re-check status whenever the user returns to Settings (e.g. after picking
+    // a home app from the system chooser) so the badge always reflects reality.
+    DisposableEffect(Unit) {
+        val activity = context as? androidx.activity.ComponentActivity
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                isDefault = LauncherUtils.isDefaultLauncher(context)
+            }
+        }
+        activity?.lifecycle?.addObserver(observer)
+        onDispose { activity?.lifecycle?.removeObserver(observer) }
+    }
+
+    val roleLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        isDefault = LauncherUtils.isDefaultLauncher(context)
+    }
+
+    fun requestDefaultLauncher() {
+        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+        val roleIntent = LauncherUtils.getDefaultLauncherRoleIntent(context)
+        try {
+            if (roleIntent != null) {
+                roleLauncher.launch(roleIntent)
+            } else {
+                context.startActivity(LauncherUtils.defaultLauncherFallbackIntent())
+            }
+        } catch (e: Exception) {
+            Toast.makeText(context, "Couldn't open the Home app picker", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .premiumGlow(
+                glowColor = SettingsTokens.accent,
+                shape = LiquidGlassRadius.shapeLg,
+                level = if (isDefault) LiquidGlassElevation.resting else LiquidGlassElevation.raised
+            )
+            .border(
+                width = if (isDefault) 1.dp else 1.5.dp,
+                color = if (isDefault) SettingsTokens.cardBorder else SettingsTokens.accent.copy(alpha = 0.55f),
+                shape = LiquidGlassRadius.shapeLg
+            )
+            .then(if (!isDefault) Modifier.clickable { requestDefaultLauncher() } else Modifier),
+        color = SettingsTokens.cardFill,
+        shape = LiquidGlassRadius.shapeLg,
+        shadowElevation = 0.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = LiquidGlassSpacing.lg, vertical = LiquidGlassSpacing.md),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(CircleShape)
+                    .background(
+                        Brush.linearGradient(listOf(SettingsTokens.accent, GlassThemeState.colors.primaryVariant))
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Rounded.Home, null, tint = Color.White, modifier = Modifier.size(24.dp))
+            }
+
+            Spacer(Modifier.width(LiquidGlassSpacing.sm))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Make Liquid Touch my Home App",
+                    style = LiquidGlassTypography.headline,
+                    color = SettingsTokens.textPrimary
+                )
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        if (isDefault) Icons.Rounded.CheckCircle else Icons.Rounded.Cancel,
+                        contentDescription = null,
+                        tint = if (isDefault) Color(0xFF30D158) else SettingsTokens.textSecondary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        if (isDefault) "Default Launcher" else "Not Default Launcher",
+                        style = LiquidGlassTypography.footnote,
+                        color = if (isDefault) Color(0xFF30D158) else SettingsTokens.textSecondary
+                    )
+                }
+            }
+
+            if (!isDefault) {
+                Box(
+                    modifier = Modifier
+                        .clip(LiquidGlassRadius.shapePill)
+                        .background(
+                            Brush.linearGradient(listOf(SettingsTokens.accent, GlassThemeState.colors.primaryVariant))
+                        )
+                        .clickable { requestDefaultLauncher() }
+                        .padding(horizontal = 16.dp, vertical = 9.dp)
+                ) {
+                    Text("Set as Default", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingItem(
+    title: String,
+    description: String,
+    onClick: () -> Unit
+) {
+    val view = LocalView.current
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val rowBg by animateColorAsState(
+        targetValue = if (isPressed) SettingsTokens.cardPressed else Color.Transparent,
+        label = "settingItemBg"
+    )
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(rowBg)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = {
+                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                    onClick()
+                }
+            )
+            .padding(horizontal = 16.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                title,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = SettingsTokens.textPrimary
+            )
+            if (description.isNotEmpty()) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    description,
+                    fontSize = 11.5.sp,
+                    lineHeight = 15.sp,
+                    color = SettingsTokens.textSecondary
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        Icon(
+            Icons.Rounded.ChevronRight,
+            contentDescription = null,
+            tint = SettingsTokens.textSecondary,
+            modifier = Modifier.size(20.dp)
+        )
+    }
+}
