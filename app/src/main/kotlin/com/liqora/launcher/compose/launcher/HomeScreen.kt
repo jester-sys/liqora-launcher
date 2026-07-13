@@ -700,28 +700,49 @@ fun HomeScreen(
             animationSpec = springSpec,
             label = "dockBottomInset"
         )
-        AnimatedVisibility(
-            visible = (launcherConfig.dockApps.isNotEmpty() || editModeState.isEnabled) &&
-                !viewModel.showAppDrawer && !viewModel.isSubjectPositioning && !editModeState.isUiHidden,
+        var showDockColorPicker by remember { mutableStateOf(false) }
+        LaunchedEffect(editModeState.isEnabled) {
+            if (!editModeState.isEnabled) showDockColorPicker = false
+        }
+
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .systemBarsPadding()
                 .padding(horizontal = LiquidGlassSpacing.md)
                 .padding(bottom = dockBottomInset.coerceAtLeast(0.dp)),
-            enter = fadeIn(tween(220)) + slideInVertically(initialOffsetY = { it / 3 }),
-            exit = fadeOut(tween(160)) + slideOutVertically(targetOffsetY = { it / 3 })
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(LiquidGlassSpacing.sm)
         ) {
-            LiquidGlassDock(
-                backdrop = backdrop,
-                glassSettings = glassSettings,
-                dockPackages = launcherConfig.dockApps,
-                metadataVersion = metadataVersion,
-                isEditMode = editModeState.isEnabled,
-                onLaunch = { pkg -> LauncherUtils.launchApp(context, pkg) },
-                onRemove = { pkg -> viewModel.removeAppFromDock(pkg) },
-                onAddSlot = { viewModel.showDockAppPicker = true }
-            )
+            AnimatedVisibility(visible = showDockColorPicker && editModeState.isEnabled) {
+                DockColorPicker(
+                    selectedColor = launcherConfig.dockTintColor,
+                    onColorSelected = { color ->
+                        viewModel.launcherConfig = viewModel.launcherConfig.copy(dockTintColor = color)
+                    }
+                )
+            }
+
+            AnimatedVisibility(
+                visible = (launcherConfig.dockApps.isNotEmpty() || editModeState.isEnabled) &&
+                    !viewModel.showAppDrawer && !viewModel.isSubjectPositioning && !editModeState.isUiHidden,
+                enter = fadeIn(tween(220)) + slideInVertically(initialOffsetY = { it / 3 }),
+                exit = fadeOut(tween(160)) + slideOutVertically(targetOffsetY = { it / 3 })
+            ) {
+                LiquidGlassDock(
+                    backdrop = backdrop,
+                    glassSettings = glassSettings,
+                    dockPackages = launcherConfig.dockApps,
+                    dockTintColor = launcherConfig.dockTintColor,
+                    metadataVersion = metadataVersion,
+                    isEditMode = editModeState.isEnabled,
+                    onLaunch = { pkg -> LauncherUtils.launchApp(context, pkg) },
+                    onRemove = { pkg -> viewModel.removeAppFromDock(pkg) },
+                    onAddSlot = { viewModel.showDockAppPicker = true },
+                    onPaletteToggle = { showDockColorPicker = !showDockColorPicker }
+                )
+            }
         }
 
         AnimatedVisibility(
@@ -1227,15 +1248,19 @@ fun LiquidGlassDock(
     backdrop: LayerBackdrop,
     glassSettings: LiquidGlassSettings,
     dockPackages: List<String>,
+    dockTintColor: Long,
     metadataVersion: Int,
     isEditMode: Boolean,
     onLaunch: (String) -> Unit,
     onRemove: (String) -> Unit,
-    onAddSlot: () -> Unit
+    onAddSlot: () -> Unit,
+    onPaletteToggle: () -> Unit
 ) {
     if (dockPackages.isEmpty() && !isEditMode) return
     val colors = GlassThemeState.colors
-    val shape = LiquidGlassRadius.shapePill
+    val view = LocalView.current
+    val shape = LiquidGlassRadius.shapeLg
+    val tint = Color(dockTintColor)
     val canAddMore = dockPackages.size < com.liqora.launcher.viewmodels.LauncherViewModel.MAX_DOCK_SLOTS
 
     Row(
@@ -1246,7 +1271,7 @@ fun LiquidGlassDock(
                 if (glassSettings.liquidGlassEnabled) {
                     Modifier.drawBackdrop(
                         backdrop = backdrop,
-                        shape = { RoundedRectangle(LiquidGlassRadius.pill) },
+                        shape = { RoundedRectangle(LiquidGlassRadius.lg) },
                         effects = {
                             if (glassSettings.vibrancyEnabled) vibrancy()
                             if (glassSettings.blurEnabled) blur(glassSettings.blurRadius.dp.toPx())
@@ -1257,19 +1282,38 @@ fun LiquidGlassDock(
                             )
                         },
                         onDrawSurface = {
-                            drawRect(colors.glassSurfaceElevated.copy(alpha = glassSettings.panelBackgroundAlpha.coerceAtLeast(0.5f)))
-                            drawRect(colors.primary.copy(alpha = 0.05f))
+                            drawRect(tint.copy(alpha = glassSettings.panelBackgroundAlpha.coerceAtLeast(0.5f)))
+                            drawRect(tint.copy(alpha = 0.06f))
                         }
                     )
                 } else {
-                    Modifier.background(colors.surface.copy(alpha = 0.92f), shape)
+                    Modifier.background(tint.copy(alpha = 0.85f), shape)
                 }
             )
             .border(1.dp, colors.glassBorder, shape)
-            .padding(horizontal = LiquidGlassSpacing.md, vertical = LiquidGlassSpacing.xs),
+            .padding(horizontal = LiquidGlassSpacing.sm, vertical = LiquidGlassSpacing.xs),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (isEditMode) {
+            Box(
+                modifier = Modifier
+                    .size(DOCK_TILE_SIZE)
+                    .clip(DockTileShape)
+                    .background(tint.copy(alpha = 0.16f), DockTileShape)
+                    .border(1.dp, tint.copy(alpha = 0.45f), DockTileShape)
+                    .pointerInput(Unit) {
+                        detectTapGestures(onTap = {
+                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                            onPaletteToggle()
+                        })
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Rounded.Palette, contentDescription = "Dock color", tint = tint, modifier = Modifier.size(20.dp))
+            }
+        }
+
         dockPackages.forEach { pkg ->
             DockIcon(
                 packageName = pkg,
@@ -1283,13 +1327,12 @@ fun LiquidGlassDock(
         }
 
         if (isEditMode && canAddMore) {
-            val view = LocalView.current
             Box(
                 modifier = Modifier
-                    .size(56.dp)
-                    .clip(CircleShape)
-                    .background(colors.primary.copy(alpha = 0.14f), CircleShape)
-                    .border(1.dp, colors.primary.copy(alpha = 0.4f), CircleShape)
+                    .size(DOCK_TILE_SIZE)
+                    .clip(DockTileShape)
+                    .background(colors.primary.copy(alpha = 0.14f), DockTileShape)
+                    .border(1.dp, colors.primary.copy(alpha = 0.4f), DockTileShape)
                     .pointerInput(Unit) {
                         detectTapGestures(onTap = {
                             view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
@@ -1300,6 +1343,66 @@ fun LiquidGlassDock(
             ) {
                 Icon(Icons.Rounded.Add, contentDescription = "Add to Dock", tint = colors.primary, modifier = Modifier.size(24.dp))
             }
+        }
+    }
+}
+
+/** Fixed square-ish shape shared by every Dock tile so icons, the add slot
+ *  and the palette button all read as one uniform, equally-sized set. */
+private val DockTileShape = RoundedCornerShape(16.dp)
+private val DOCK_TILE_SIZE = 56.dp
+
+/** Preset swatches for the Dock's glass tint — Blue is the Blue Liquid Glass
+ *  default; the other four give users a real color choice while keeping the
+ *  same blur/vibrancy/lens glass recipe untouched. */
+object DockColorPresets {
+    val swatches: List<Long> = listOf(
+        0xFF0A84FFL, // Blue (default)
+        0xFFAF52DEL, // Purple
+        0xFF30D158L, // Green
+        0xFFFF9F0AL, // Orange
+        0xFFFF375FL  // Pink
+    )
+}
+
+@Composable
+fun DockColorPicker(
+    selectedColor: Long,
+    onColorSelected: (Long) -> Unit
+) {
+    val colors = GlassThemeState.colors
+    val view = LocalView.current
+    val shape = LiquidGlassRadius.shapeLg
+
+    Row(
+        modifier = Modifier
+            .clip(shape)
+            .background(colors.glassSurfaceElevated, shape)
+            .border(1.dp, colors.glassBorder, shape)
+            .padding(horizontal = LiquidGlassSpacing.md, vertical = LiquidGlassSpacing.sm),
+        horizontalArrangement = Arrangement.spacedBy(LiquidGlassSpacing.sm),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        DockColorPresets.swatches.forEach { colorLong ->
+            val swatchColor = Color(colorLong)
+            val isSelected = colorLong == selectedColor
+            Box(
+                modifier = Modifier
+                    .size(if (isSelected) 34.dp else 28.dp)
+                    .clip(CircleShape)
+                    .background(swatchColor, CircleShape)
+                    .border(
+                        width = if (isSelected) 2.dp else 1.dp,
+                        color = if (isSelected) Color.White else Color.White.copy(alpha = 0.3f),
+                        shape = CircleShape
+                    )
+                    .pointerInput(colorLong) {
+                        detectTapGestures(onTap = {
+                            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                            onColorSelected(colorLong)
+                        })
+                    }
+            )
         }
     }
 }
@@ -1316,7 +1419,6 @@ private fun DockIcon(
 ) {
     val context = LocalContext.current
     val view = LocalView.current
-    val cornerRadius = glassSettings.iconCornerRadius.dp
 
     val iconDrawableState = produceState<android.graphics.drawable.Drawable?>(
         initialValue = null, packageName, glassSettings.iconPackPackageName, metadataVersion
@@ -1338,14 +1440,14 @@ private fun DockIcon(
     val iconDrawable = iconDrawableState.value
 
     Box(
-        modifier = Modifier.size(56.dp),
+        modifier = Modifier.size(DOCK_TILE_SIZE),
         contentAlignment = Alignment.Center
     ) {
         Box(
             modifier = Modifier
-                .size(52.dp)
-                .clip(RoundedCornerShape(cornerRadius))
-                .background(GlassThemeState.colors.glassSurface, RoundedCornerShape(cornerRadius))
+                .size(DOCK_TILE_SIZE)
+                .clip(DockTileShape)
+                .background(GlassThemeState.colors.glassSurface, DockTileShape)
                 .pointerInput(isEditMode) {
                     if (!isEditMode) {
                         detectTapGestures(onTap = {
@@ -1354,7 +1456,7 @@ private fun DockIcon(
                         })
                     }
                 }
-                .padding(6.dp),
+                .padding(8.dp),
             contentAlignment = Alignment.Center
         ) {
             if (iconDrawable != null) {

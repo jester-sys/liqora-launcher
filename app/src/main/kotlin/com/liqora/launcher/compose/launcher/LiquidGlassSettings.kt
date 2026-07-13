@@ -31,9 +31,9 @@ data class LiquidGlassSettings(
     val vibrancyEnabled: Boolean = true,
 
     // Colors and transparency
-    val panelTintColor: Long = 0xFF0A84FFL, // Apple Blue — default Blue Liquid Glass
-    val panelBackgroundAlpha: Float = 0.12f,
-    val drawerBackgroundAlpha: Float = 0.85f,
+    val panelTintColor: Long = 0xFF3B82F6L, // Soft Sky Blue — default Blue Liquid Glass
+    val panelBackgroundAlpha: Float = 0.05f,
+    val drawerBackgroundAlpha: Float = 0.14f,
     val iconBackgroundAlpha: Float = 0.1f,
 
     // Corner radius
@@ -118,10 +118,14 @@ data class LiquidGlassSettings(
     val windowBlurRadius: Float = 20f,
     val panelBlurEnabled: Boolean = false,
     val drawerBlurEnabled: Boolean = true,
-    val drawerBlurRadius: Float = 25f,
+    val drawerBlurRadius: Float = 32f,
 
     // Runtime state (persisted for convenience)
-    val secretWallpaperVisible: Boolean = true
+    val secretWallpaperVisible: Boolean = true,
+
+    // Schema/defaults version — bump this whenever you change a default value
+    // and want existing users to be force-migrated to the new value.
+    val settingsVersion: Int = 0
 ) {
     /**
      * Determines if it is currently "night" based on the scheduled times,
@@ -168,6 +172,10 @@ object LiquidGlassSettingsRepository {
     private const val SETTINGS_FILE = "liquid_glass_settings.json"
     const val ACTION_CONFIG_CHANGED = "com.liqora.launcher.ACTION_CONFIG_CHANGED"
 
+    // Bump this number every time you change a default value in LiquidGlassSettings
+    // and want it force-applied to users who already have a saved settings file.
+    private const val CURRENT_SETTINGS_VERSION = 1
+
     private val json = Json {
         prettyPrint = true
         ignoreUnknownKeys = true
@@ -200,17 +208,42 @@ object LiquidGlassSettingsRepository {
             val file = File(context.filesDir, SETTINGS_FILE)
             if (file.exists()) {
                 val jsonString = file.readText()
-                if (jsonString.isBlank()) return@withContext LiquidGlassSettings()
+                if (jsonString.isBlank()) return@withContext migrateIfNeeded(context, LiquidGlassSettings())
 
                 try {
-                    json.decodeFromString<LiquidGlassSettings>(jsonString)
+                    val loaded = json.decodeFromString<LiquidGlassSettings>(jsonString)
+                    migrateIfNeeded(context, loaded)
                 } catch (e: Exception) {
                     // Re-throw to prevent returning defaults on corruption
                     throw Exception("Failed to decode LiquidGlassSettings: ${e.message}", e)
                 }
             } else {
-                LiquidGlassSettings()
+                // Fresh install — already on latest version, no migration needed
+                LiquidGlassSettings(settingsVersion = CURRENT_SETTINGS_VERSION)
             }
         }
+    }
+
+    /**
+     * Force-applies new default values to fields for users who saved settings
+     * under an older version, without touching any of their other customizations.
+     */
+    private suspend fun migrateIfNeeded(context: Context, settings: LiquidGlassSettings): LiquidGlassSettings {
+        if (settings.settingsVersion >= CURRENT_SETTINGS_VERSION) return settings
+
+        var migrated = settings
+
+        // --- version 0 -> 1: new panel transparency / drawer transparency / tint color defaults ---
+        if (settings.settingsVersion < 1) {
+            migrated = migrated.copy(
+                panelBackgroundAlpha = 0.05f,
+                drawerBackgroundAlpha = 0.14f,
+                panelTintColor = 0xFF3B82F6L
+            )
+        }
+
+        migrated = migrated.copy(settingsVersion = CURRENT_SETTINGS_VERSION)
+        saveSettings(context, migrated) // persist migrated values immediately
+        return migrated
     }
 }

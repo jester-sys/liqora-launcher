@@ -1,5 +1,7 @@
 package com.liqora.launcher.compose.launcher
 
+import android.content.Context
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -26,6 +28,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import coil.ImageLoader
+import coil.compose.AsyncImage
+import coil.decode.VideoFrameDecoder
+import coil.request.ImageRequest
 import com.liqora.launcher.helpers.AppleMusicIntegration
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat

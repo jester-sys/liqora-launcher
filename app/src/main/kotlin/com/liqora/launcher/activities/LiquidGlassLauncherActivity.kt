@@ -10,7 +10,10 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.lifecycle.viewModelScope
 import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import app.liqora.launcher.BuildConfig

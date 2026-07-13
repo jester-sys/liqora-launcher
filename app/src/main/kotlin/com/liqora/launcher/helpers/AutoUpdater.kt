@@ -2,8 +2,8 @@ package com.liqora.launcher.helpers
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.util.Log
-import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -13,9 +13,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.io.File
 import java.util.concurrent.TimeUnit
-import java.util.zip.ZipInputStream
 
 object AutoUpdater {
     private const val TAG = "AutoUpdater"
@@ -95,8 +93,15 @@ object AutoUpdater {
                 }
 
                 val artifactsUrl = latestRun["artifacts_url"]?.jsonPrimitive?.contentOrNull ?: return@withContext
+                // The run's own GitHub page — used below instead of silently
+                // downloading + installing an APK, since that requires the
+                // REQUEST_INSTALL_PACKAGES permission, which Google Play does
+                // not allow apps to use for self-updating outside of Play's
+                // own update mechanism.
+                val runHtmlUrl = latestRun["html_url"]?.jsonPrimitive?.contentOrNull
 
-                // 3. Fetch artifacts
+                // 3. Fetch artifacts (only to confirm a build actually exists for
+                // this run before telling the user an update is available)
                 val artifactsRequest = Request.Builder()
                     .url(artifactsUrl)
                     .apply {
@@ -120,77 +125,14 @@ object AutoUpdater {
                      return@withContext
                 }
 
-                // Filter for "app-debug" or "launcher" artifact if multiple exist
-                var selectedArtifact = artifacts.firstOrNull()?.jsonObject
-                for (i in 0 until artifacts.size) {
-                    val name = artifacts[i].jsonObject["name"]?.jsonPrimitive?.contentOrNull ?: ""
-                    if (name.contains("app-debug", ignoreCase = true) || name.contains("launcher", ignoreCase = true)) {
-                        selectedArtifact = artifacts[i].jsonObject
-                        break
+                DebugLogger.log(TAG, "Update available (run #$runNumber). Opening release page for manual download.")
+
+                // 4. Hand off to the browser instead of installing directly.
+                // The app no longer downloads or installs an APK on its own.
+                if (runHtmlUrl != null) {
+                    withContext(Dispatchers.Main) {
+                        openUpdatePage(context, runHtmlUrl)
                     }
-                }
-
-                if (selectedArtifact == null) {
-                    DebugLogger.log(TAG, "No matching artifact found")
-                    return@withContext
-                }
-
-                val downloadUrl = selectedArtifact["archive_download_url"]?.jsonPrimitive?.contentOrNull ?: return@withContext
-                val artifactName = selectedArtifact["name"]?.jsonPrimitive?.contentOrNull ?: "update"
-
-                DebugLogger.log(TAG, "Downloading: $artifactName")
-
-                // 4. Download Artifact (ZIP)
-                val downloadRequest = Request.Builder()
-                    .url(downloadUrl)
-                     .apply {
-                        if (token.isNotBlank()) header("Authorization", "token $token")
-                    }
-                    .build()
-
-                val downloadResponse = client.newCall(downloadRequest).execute()
-                if (!downloadResponse.isSuccessful) {
-                     Log.e(TAG, "Failed to download artifact: ${downloadResponse.code}")
-                    return@withContext
-                }
-
-                val zipFile = File(context.cacheDir, "update.zip")
-                zipFile.outputStream().use { output ->
-                    downloadResponse.body?.byteStream()?.use { input ->
-                        input.copyTo(output)
-                    }
-                }
-
-                DebugLogger.log(TAG, "Downloaded ${zipFile.length()} bytes. Unzipping...")
-
-                // 5. Unzip to find APK
-                var apkFile: File? = null
-                ZipInputStream(zipFile.inputStream().buffered()).use { zis ->
-                    var entry = zis.nextEntry
-                    while (entry != null) {
-                        // Look for APK, including in subdirectories
-                        if (entry.name.endsWith(".apk", ignoreCase = true)) {
-                            DebugLogger.log(TAG, "Found APK: ${entry.name}")
-                            val extractedApk = File(context.cacheDir, "update.apk")
-                            extractedApk.outputStream().use { fos ->
-                                zis.copyTo(fos)
-                            }
-                            apkFile = extractedApk
-                            break
-                        }
-                        zis.closeEntry()
-                        entry = zis.nextEntry
-                    }
-                }
-
-                zipFile.delete()
-
-                if (apkFile != null) {
-                    Log.d(TAG, "APK extracted, triggering install")
-                    // 6. Trigger Install
-                    installApk(context, apkFile)
-                } else {
-                    Log.e(TAG, "No APK found in zip")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Update failed", e)
@@ -198,21 +140,17 @@ object AutoUpdater {
         }
     }
 
-    private fun installApk(context: Context, file: File) {
+    /** Opens the update/release page in the user's browser so they can review
+     *  and, if they choose, download and sideload it themselves — the app
+     *  itself never requests install-packages access or installs anything. */
+    private fun openUpdatePage(context: Context, url: String) {
         try {
-            val uri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.fileprovider",
-                file
-            )
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
         } catch (e: Exception) {
-            Log.e(TAG, "Install failed", e)
+            Log.e(TAG, "Could not open update page", e)
         }
     }
 }

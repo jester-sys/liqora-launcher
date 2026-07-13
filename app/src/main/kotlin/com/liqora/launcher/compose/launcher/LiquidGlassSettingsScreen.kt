@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalContext
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.PickVisualMediaRequest
 import android.view.HapticFeedbackConstants
 import kotlinx.coroutines.launch
 import android.widget.Toast

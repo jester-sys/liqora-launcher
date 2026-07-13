@@ -12,9 +12,11 @@ import android.os.Build
 import android.util.Log
 import android.util.LruCache
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.ConcurrentHashMap
 
 object AppIconCache {
     private const val DISK_CACHE_DIR = "app_icon_cache"

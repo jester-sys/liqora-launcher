@@ -6,6 +6,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.OutputStream
+import java.io.InputStream
 
 /**
  * Handles exporting and importing of launcher schematics

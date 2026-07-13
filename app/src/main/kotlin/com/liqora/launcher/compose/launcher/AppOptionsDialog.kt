@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.core.graphics.drawable.toBitmap
 import coil.compose.AsyncImage
+import kotlinx.coroutines.launch
 
 @Composable
 fun AppOptionsDialog(

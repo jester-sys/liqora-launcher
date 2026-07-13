@@ -37,21 +37,22 @@ android {
         minSdk = project.libs.versions.app.build.minimumSDK.get().toInt()
         targetSdk = 36 // Revert back to 36
 
-        val versionBase = project.findProperty("VERSION_BASE")?.toString() ?: "0.9"
-        val buildNumber = System.getenv("BUILD_NUMBER")?.toIntOrNull() ?: 0
+        val versionBase = project.findProperty("VERSION_BASE")?.toString() ?: "1.0"
+        val buildNumber = System.getenv("BUILD_NUMBER")?.toIntOrNull() ?: 6
+
         versionName = "$versionBase.$buildNumber"
-        versionCode = if (buildNumber > 0) buildNumber else 1
+        versionCode = buildNumber
+
         setProperty("archivesBaseName", "launcher-$versionCode")
 
         ksp {
             arg("room.schemaLocation", "$projectDir/schemas")
         }
 
-        // OpenWeatherMap API key (set project property 'openWeatherApiKey' in gradle.properties for local testing)
+        // OpenWeatherMap API key
         val openWeatherApiKeyValue = project.findProperty("openWeatherApiKey") ?: ""
         buildConfigField("String", "OPENWEATHER_API_KEY", "\"$openWeatherApiKeyValue\"")
     }
-
     /* --------------------------- signingConfigs --------------------------- */
     signingConfigs {
         val keystoreBase64 = System.getenv("SIGNING_KEYSTORE_BASE64")

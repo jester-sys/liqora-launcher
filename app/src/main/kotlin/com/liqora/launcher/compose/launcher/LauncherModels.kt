@@ -1,5 +1,8 @@
 package com.liqora.launcher.compose.launcher
 
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import android.content.ComponentName
 import kotlinx.serialization.Serializable
 import java.util.UUID
@@ -149,6 +152,11 @@ data class LauncherConfig(
     // (or system defaults) — see LauncherUtils.resolveDefaultDockApps. Empty by
     // default so imported/older configs simply render with no dock.
     val dockApps: List<String> = emptyList(),
+    // Tint color for the floating Dock's glass surface (kept separate from the
+    // panel tint so users can give the Dock its own accent while every panel
+    // keeps using panelTintColor). Defaults to Apple Blue — matches the rest
+    // of the default Blue Liquid Glass look.
+    val dockTintColor: Long = 0xFF0A84FFL,
     // Guards the one-time "first launch" default layout + dock setup so it is
     // never re-applied after the user has customized or intentionally cleared
     // their Home Screen (see LauncherViewModel.loadData).

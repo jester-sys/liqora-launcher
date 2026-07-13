@@ -19,12 +19,14 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.service.wallpaper.WallpaperService
+import android.util.DisplayMetrics
 import android.view.SurfaceHolder
 import android.util.Log
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 import coil.ImageLoader
+import coil.decode.VideoFrameDecoder
 import coil.request.ImageRequest
 import com.liqora.launcher.helpers.AppleMusicIntegration
 import com.liqora.launcher.helpers.StackBlur

@@ -10,6 +10,7 @@ import android.os.Build
 import android.provider.Settings
 import android.app.Activity
 import com.liqora.launcher.compose.launcher.LauncherConfig
+import com.liqora.launcher.compose.launcher.LauncherItem
 
 object LauncherUtils {
 
