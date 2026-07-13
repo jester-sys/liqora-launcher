@@ -78,6 +78,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.core.graphics.drawable.toBitmap
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.drawBackdrop
@@ -167,7 +168,6 @@ private object CategoryStyle {
  */
 private object RecentAppsTracker {
 
-    @RequiresApi(Build.VERSION_CODES.Q)
     fun hasPermission(context: Context): Boolean {
         val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
         val mode = appOps.unsafeCheckOpNoThrow(
@@ -204,6 +204,87 @@ private object RecentAppsTracker {
         val intent = android.content.Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
         intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)
+    }
+
+    data class AppUsageSummary(
+        val totalForegroundMillis: Long,
+        val launchCount: Int,
+        val dailyMinutes: List<Pair<String, Int>> // day label ("Mon") to minutes, oldest first
+    )
+
+    /** Total foreground time + launch count + per-day breakdown for the given
+     *  package over the last [days] days. Call off the main thread. */
+    fun queryAppUsageSummary(context: Context, packageName: String, days: Int = 7): AppUsageSummary {
+        if (!hasPermission(context)) return AppUsageSummary(0L, 0, emptyList())
+        val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+
+        val calendar = java.util.Calendar.getInstance()
+        val end = calendar.timeInMillis
+        calendar.add(java.util.Calendar.DAY_OF_YEAR, -(days - 1))
+        calendar.set(java.util.Calendar.HOUR_OF_DAY, 0)
+        calendar.set(java.util.Calendar.MINUTE, 0)
+        calendar.set(java.util.Calendar.SECOND, 0)
+        calendar.set(java.util.Calendar.MILLISECOND, 0)
+        val start = calendar.timeInMillis
+
+        val millisPerDay = 24L * 60L * 60L * 1000L
+        val dailyMillis = LongArray(days)
+        var launchCount = 0
+        var totalMillis = 0L
+        var lastForegroundStart: Long? = null
+
+        val events = usm.queryEvents(start, end)
+        val event = UsageEvents.Event()
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+            if (event.packageName != packageName) continue
+            when (event.eventType) {
+                UsageEvents.Event.MOVE_TO_FOREGROUND -> {
+                    launchCount++
+                    lastForegroundStart = event.timeStamp
+                }
+                UsageEvents.Event.MOVE_TO_BACKGROUND -> {
+                    lastForegroundStart?.let { fgStart ->
+                        addSegmentToBuckets(dailyMillis, fgStart, event.timeStamp, start, millisPerDay)
+                        totalMillis += (event.timeStamp - fgStart).coerceAtLeast(0)
+                        lastForegroundStart = null
+                    }
+                }
+            }
+        }
+        // Agar app abhi bhi foreground me hai (query end tak), us segment ko bhi close kar
+        lastForegroundStart?.let { fgStart ->
+            addSegmentToBuckets(dailyMillis, fgStart, end, start, millisPerDay)
+            totalMillis += (end - fgStart).coerceAtLeast(0)
+        }
+
+        val dayFormatter = java.text.SimpleDateFormat("EEE", java.util.Locale.getDefault())
+        val dailyMinutes = (0 until days).map { i ->
+            val dayStart = start + i * millisPerDay
+            dayFormatter.format(java.util.Date(dayStart)) to (dailyMillis[i] / 60000L).toInt()
+        }
+
+        return AppUsageSummary(totalMillis, launchCount, dailyMinutes)
+    }
+
+    private fun addSegmentToBuckets(buckets: LongArray, segStart: Long, segEnd: Long, rangeStart: Long, millisPerDay: Long) {
+        var cur = segStart.coerceAtLeast(rangeStart)
+        if (cur >= segEnd) return
+        while (cur < segEnd) {
+            val dayIndex = ((cur - rangeStart) / millisPerDay).toInt()
+            if (dayIndex < 0 || dayIndex >= buckets.size) break
+            val dayEnd = rangeStart + (dayIndex + 1) * millisPerDay
+            val segmentEndInDay = minOf(segEnd, dayEnd)
+            buckets[dayIndex] += (segmentEndInDay - cur)
+            cur = segmentEndInDay
+        }
+    }
+
+    fun formatDuration(millis: Long): String {
+        val totalMinutes = millis / 60000
+        val hours = totalMinutes / 60
+        val minutes = totalMinutes % 60
+        return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
     }
 }
 
@@ -246,6 +327,7 @@ fun AppDrawer(
 
     // State for app options dialog
     var appForOptions by remember { mutableStateOf<AvailableApp?>(null) }
+    var appForUsageStats by remember { mutableStateOf<AvailableApp?>(null) }
     var showEditDialog by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
 
@@ -725,7 +807,14 @@ fun AppDrawer(
                             AppDrawerItem(
                                 app = app,
                                 glassSettings = glassSettings,
-                                onClick = { handleAppClick(app) },
+                                onClick = {
+                                    // Recent tab me tap = usage stats dialog; baaki jagah tap = launch
+                                    if (selectedMainTab == DrawerTab.RECENT && searchQuery.isBlank()) {
+                                        appForUsageStats = app
+                                    } else {
+                                        handleAppClick(app)
+                                    }
+                                },
                                 onLongClick = { appForOptions = app }
                             )
                         }
@@ -794,51 +883,81 @@ fun AppDrawer(
                 onSelectSettings = onOpenSettings
             )
         }
-    }
 
-    // Options Dialog
-    if (appForOptions != null && !showEditDialog) {
-        AppOptionsDialog(
-            app = appForOptions!!,
-            onDismiss = { appForOptions = null },
-            onEdit = { showEditDialog = true },
-            onKill = {
-                val am = context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager
-                am.killBackgroundProcesses(appForOptions!!.packageName)
-                android.widget.Toast.makeText(context, "Killed ${appForOptions!!.label}", android.widget.Toast.LENGTH_SHORT).show()
-                appForOptions = null
-            },
-            onUninstall = {
-                val intent = android.content.Intent(android.content.Intent.ACTION_DELETE)
-                intent.data = android.net.Uri.parse("package:${appForOptions!!.packageName}")
-                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(intent)
-                appForOptions = null
-            }
-        )
-    }
+        if (appForOptions != null && !showEditDialog) {
+            AppOptionsDialog(
+                app = appForOptions!!,
+                backdrop = backdrop,
+                glassSettings = glassSettings,
+                panelColor = panelColor,
+                panelAlpha = panelAlpha,
+                onDismiss = { appForOptions = null },
+                onEdit = { showEditDialog = true },
+                onKill = {
+                    val am = context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                    am.killBackgroundProcesses(appForOptions!!.packageName)
+                    android.widget.Toast.makeText(context, "Killed ${appForOptions!!.label}", android.widget.Toast.LENGTH_SHORT).show()
+                    appForOptions = null
+                },
+                onUninstall = {
+                    val intent = android.content.Intent(android.content.Intent.ACTION_DELETE)
+                    intent.data = android.net.Uri.parse("package:${appForOptions!!.packageName}")
+                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(intent)
+                    appForOptions = null
+                },
+                onUsageAccess = {
+                    appForUsageStats = appForOptions
+                    appForOptions = null
+                }
+            )
+        }
 
-    // Edit Dialog
-    if (showEditDialog && appForOptions != null) {
-        EditAppInfoDialog(
-            app = appForOptions!!,
-            onDismiss = { showEditDialog = false; appForOptions = null },
-            onSave = { newLabel, newIconUri ->
-                scope.launch(Dispatchers.IO) {
-                    val metadata = AppMetadata(
-                        label = if (newLabel != appForOptions!!.label) newLabel else null,
-                        customIconUri = newIconUri
-                    )
-                    AppMetadataRepository.saveMetadata(context, appForOptions!!.packageName, metadata)
-                    withContext(Dispatchers.Main) {
-                        onRefreshApps()
-                        showEditDialog = false
-                        appForOptions = null
+        if (showEditDialog && appForOptions != null) {
+            EditAppInfoDialog(
+                app = appForOptions!!,
+                backdrop = backdrop,
+                glassSettings = glassSettings,
+                panelColor = panelColor,
+                panelAlpha = panelAlpha,
+                onDismiss = { showEditDialog = false; appForOptions = null },
+                onSave = { newLabel, newIconUri ->
+                    scope.launch(Dispatchers.IO) {
+                        val metadata = AppMetadata(
+                            label = if (newLabel != appForOptions!!.label) newLabel else null,
+                            customIconUri = newIconUri
+                        )
+                        AppMetadataRepository.saveMetadata(context, appForOptions!!.packageName, metadata)
+                        withContext(Dispatchers.Main) {
+                            onRefreshApps()
+                            showEditDialog = false
+                            appForOptions = null
+                        }
                     }
                 }
-            }
-        )
+            )
+        }
+
+
+        if (appForUsageStats != null) {
+            AppUsageStatsDialog(
+                app = appForUsageStats!!,
+                backdrop = backdrop,
+                glassSettings = glassSettings,
+                panelColor = panelColor,
+                panelAlpha = panelAlpha,
+                onDismiss = { appForUsageStats = null }
+            )
+        }
     }
+
+
+
+
+
+
+
+
 }
 
 /**
@@ -1399,3 +1518,164 @@ fun AppDrawerItem(
         }
     }
 }
+
+
+@Composable
+private fun AppUsageStatsDialog(
+    app: AvailableApp,
+    backdrop: LayerBackdrop,
+    glassSettings: LiquidGlassSettings,
+    panelColor: Color,
+    panelAlpha: Float,
+    onDismiss: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val colors = GlassThemeState.colors
+    val hasPermission = remember { RecentAppsTracker.hasPermission(context) }
+    var summary by remember { mutableStateOf<RecentAppsTracker.AppUsageSummary?>(null) }
+    var isLoading by remember { mutableStateOf(hasPermission) }
+
+    LaunchedEffect(app.packageName) {
+        if (hasPermission) {
+            summary = withContext(Dispatchers.IO) {
+                RecentAppsTracker.queryAppUsageSummary(context, app.packageName, days = 7)
+            }
+            isLoading = false
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(0.9f)
+                .clip(LiquidGlassRadius.shapeLg)
+                .then(
+                    if (glassSettings.drawerBlurEnabled) {
+                        // Panel jaisa hi real backdrop blur — same backdrop source
+                        Modifier.drawBackdrop(
+                            backdrop = backdrop,
+                            shape = { RoundedRectangle(24f) },
+                            effects = {
+                                if (glassSettings.vibrancyEnabled) vibrancy()
+                                blur(glassSettings.drawerBlurRadius.dp.toPx())
+                            },
+                            onDrawSurface = {
+                                drawRect(panelColor.copy(alpha = (panelAlpha + 0.20f).coerceIn(0f, 1f)))
+                            }
+                        )
+                    } else {
+                        Modifier.background(panelColor.copy(alpha = (panelAlpha + 0.20f).coerceIn(0f, 1f)))
+                    }
+                )
+                .border(1.dp, colors.glassBorder, LiquidGlassRadius.shapeLg)
+                .padding(LiquidGlassSpacing.lg)
+        ) {
+            // Header: icon + name + package
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                MiniAppIcon(app = app, glassSettings = glassSettings)
+                Spacer(Modifier.width(LiquidGlassSpacing.sm))
+                Column {
+                    Text(app.label, style = LiquidGlassTypography.callout, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(app.packageName, style = LiquidGlassTypography.caption, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+
+            Spacer(Modifier.height(LiquidGlassSpacing.md))
+
+            when {
+                !hasPermission -> {
+                    Text(
+                        "Grant Usage Access to see this app's usage stats",
+                        style = LiquidGlassTypography.subheadline,
+                        color = colors.textSecondary
+                    )
+                    Spacer(Modifier.height(LiquidGlassSpacing.sm))
+                    TextButton(onClick = { RecentAppsTracker.openUsageAccessSettings(context) }) {
+                        Text("Open Settings", color = colors.primary)
+                    }
+                }
+                isLoading -> {
+                    Box(Modifier.fillMaxWidth().padding(vertical = 24.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = colors.primary)
+                    }
+                }
+                else -> {
+                    val s = summary ?: RecentAppsTracker.AppUsageSummary(0, 0, emptyList())
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(LiquidGlassSpacing.sm)
+                    ) {
+                        StatChip(label = "Total time", value = RecentAppsTracker.formatDuration(s.totalForegroundMillis), colors = colors, modifier = Modifier.weight(1f))
+                        StatChip(label = "Opened", value = "${s.launchCount}×", colors = colors, modifier = Modifier.weight(1f))
+                    }
+
+                    Spacer(Modifier.height(LiquidGlassSpacing.md))
+
+                    Text("Last 7 days", style = LiquidGlassTypography.footnote, color = colors.textSecondary)
+                    Spacer(Modifier.height(LiquidGlassSpacing.xs))
+                    UsageBarChart(data = s.dailyMinutes, colors = colors)
+                }
+            }
+
+            Spacer(Modifier.height(LiquidGlassSpacing.md))
+
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.align(Alignment.End)
+            ) {
+                Text("Close", color = colors.primary)
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatChip(label: String, value: String, colors: LiquidGlassColors, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(colors.glassSurface)
+            .border(1.dp, colors.glassBorder, RoundedCornerShape(14.dp))
+            .padding(vertical = LiquidGlassSpacing.sm, horizontal = LiquidGlassSpacing.sm)
+    ) {
+        Text(value, style = LiquidGlassTypography.subheadline, color = colors.textPrimary, maxLines = 1)
+        Text(label, style = LiquidGlassTypography.caption, color = colors.textSecondary, maxLines = 1)
+    }
+}
+
+/** Simple dependency-free bar chart — a Row of weighted Boxes whose height
+ *  scales against the day with the most usage. No chart library needed. */
+@Composable
+private fun UsageBarChart(data: List<Pair<String, Int>>, colors: LiquidGlassColors) {
+    val maxMinutes = (data.maxOfOrNull { it.second } ?: 0).coerceAtLeast(1)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(120.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.Bottom
+    ) {
+        data.forEach { (label, minutes) ->
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.weight(1f)
+            ) {
+                val heightFraction = (minutes.toFloat() / maxMinutes.toFloat()).coerceIn(0f, 1f)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(0.5f)
+                        .height((88.dp * heightFraction).coerceAtLeast(if (minutes > 0) 4.dp else 1.dp))
+                        .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
+                        .background(if (minutes > 0) colors.primary else colors.glassSurface)
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(label, style = LiquidGlassTypography.caption, color = colors.textSecondary)
+            }
+        }
+    }
+}
+
