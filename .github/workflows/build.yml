@@ -26,6 +26,9 @@ jobs:
                   distribution: temurin
                   cache: gradle
 
+            - name: Run Unit Tests
+              run: ./gradlew testFossDebugUnitTest --stacktrace
+ 
             - name: Build Debug APK
               run: |
                   chmod +x gradlew
